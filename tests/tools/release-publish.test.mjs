@@ -191,7 +191,7 @@ describe('release publishing', () => {
         dist.dir,
       ]);
 
-    it('makes one dist commit per release and prints one tag each', async () => {
+    it('makes one dist commit per release and prints each tag with its release commit', async () => {
       await addScript('alpha', 'Alpha Script', '# Alpha\n\n![shot](images/shot.png)\n');
       await addScript('beta', 'Beta Script');
       await repo.write('scripts/alpha/images/shot.png', PNG);
@@ -204,7 +204,7 @@ describe('release publishing', () => {
 
       const result = publish(before, after);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout, 'alpha-v1.0.0\nbeta-v1.0.0\n');
+      assert.equal(result.stdout, `alpha-v1.0.0 ${after}\nbeta-v1.0.0 ${after}\n`);
 
       assert.equal(git(dist.dir, 'rev-list', '--count', `${distBefore}..HEAD`), '2');
       assert.equal(
@@ -237,7 +237,7 @@ describe('release publishing', () => {
       await addScript('alpha', 'Alpha');
       const before = repo.commit('add alpha');
       await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
-      repo.commit('release 1.0.0');
+      const first = repo.commit('release 1.0.0');
       await release('alpha', 'Alpha', '1.1.0', 'Adds more.', {
         previous: [['1.0.0', '### Added\n\n- Adds alpha.']],
       });
@@ -246,7 +246,7 @@ describe('release publishing', () => {
 
       const result = publish(before, after);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout, 'alpha-v1.0.0\nalpha-v1.1.0\n');
+      assert.equal(result.stdout, `alpha-v1.0.0 ${first}\nalpha-v1.1.0 ${after}\n`);
       assert.equal(git(dist.dir, 'rev-list', '--count', `${distBefore}..HEAD`), '2');
       assert.equal(
         git(dist.dir, 'log', '-1', '--format=%B', 'HEAD~1'),
@@ -335,7 +335,7 @@ describe('release publishing', () => {
       const third = repo.commit('release 1.0.1');
       const result = publish(second, third);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout, 'alpha-v1.0.1\n');
+      assert.equal(result.stdout, `alpha-v1.0.1 ${third}\n`);
       assert.deepEqual((await readdir(join(dist.dir, 'images', 'alpha'))).sort(), ['keep.png']);
       assert.equal(git(dist.dir, 'status', '--porcelain'), '');
       assert.equal(

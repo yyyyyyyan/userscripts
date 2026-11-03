@@ -161,7 +161,7 @@ async function main(args) {
   }
   for (const release of releasesByCommit(values.before, values.after, root)) {
     await publish(resolve(values.dist), release);
-    console.log(`${release.slug}-v${release.version}`);
+    console.log(`${release.slug}-v${release.version} ${release.commit}`);
   }
 }
 

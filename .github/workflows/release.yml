@@ -65,7 +65,6 @@ jobs:
         if: steps.range.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AFTER: ${{ github.sha }}
         run: |
           if [[ ! -s "$RUNNER_TEMP/tags.txt" ]]; then
             echo "::notice::No releases in this push."
@@ -73,7 +72,7 @@ jobs:
           fi
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git -C dist push "$remote" HEAD:refs/heads/dist
-          while IFS= read -r tag; do
-            git tag "$tag" "$AFTER"
+          while read -r tag commit; do
+            git tag "$tag" "$commit"
             git push "$remote" "refs/tags/$tag"
           done < "$RUNNER_TEMP/tags.txt"

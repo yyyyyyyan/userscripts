@@ -94,9 +94,9 @@ reads.
 8. Add the script to the **Script** dropdown in both issue forms in
    `.github/ISSUE_TEMPLATE/`.
 9. Add a smoke test in `tests/e2e/<slug>.spec.mjs`.
-
-A new script has no changelog fragment and no `CHANGELOG.md`. It reaches
-`1.0.0` through its first release.
+10. Add at least one `added` changelog fragment that describes the script, as
+    in [Describe your change](#describe-your-change). Its first release turns
+    the fragments into the `1.0.0` section of a new `CHANGELOG.md`.
 
 ## Describe your change
 
