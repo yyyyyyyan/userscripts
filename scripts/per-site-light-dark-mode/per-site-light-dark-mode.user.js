@@ -175,7 +175,11 @@
         `The script could not answer this page's theme checks: ${status.javascriptError.replace(/[.\s]+$/, '')}.`,
       );
     } else if (status.mediaConditions > 0 || status.pageQueries > 0 || everPinned) {
-      lines.push(`It applied: this page asked which theme you prefer and was told ${mode}.`);
+      lines.push(
+        status.mediaConditions > 0 || status.pageQueries > 0
+          ? `It applied: this page asked which theme you prefer and was told ${mode}.`
+          : `It applied: the script set this page's color scheme to ${mode}.`,
+      );
       if (injectedAt.scripts > 0) {
         lines.push(
           "If parts of this page still show your browser's setting, the page probably checked its theme before the script loaded; reload the page, or set the site's own theme to System or Automatic.",

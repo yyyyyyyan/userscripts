@@ -794,6 +794,17 @@ test('status says it applied on a normal page', async () => {
   });
 });
 
+test('status does not say the page asked when only the color scheme was set', async () => {
+  await withSite(await fixture('meta-scheme.html'), async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    await expect.poll(() => backgroundOf(page)).toBe(BLACK);
+    const status = await readStatus(vm, page);
+    expect(status).toContain("It applied: the script set this page's color scheme to dark.");
+    expect(status).not.toContain('this page asked');
+  });
+});
+
 test('an unrelated script that ran first does not hide that the page asked later', async () => {
   const routes = { '/': pausedAfterMark(await fixture('late-check.html')) };
   await withSites({ routes }, async ({ vm, open }) => {
