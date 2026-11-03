@@ -56,10 +56,28 @@ async function choose(context, extensionId, page, label) {
 }
 
 /**
+ * Counts assignments to `document.adoptedStyleSheets`, which is how a pin re-check shows up
+ * from outside: each one lifts the pin and puts it back.
+ */
+function countAdoptedAssignments() {
+  const original = Object.getOwnPropertyDescriptor(Document.prototype, 'adoptedStyleSheets');
+  if (!original?.set) return;
+  const set = original.set;
+  Object.defineProperty(window, '__adoptedAssignments', { value: { count: 0 } });
+  Object.defineProperty(Document.prototype, 'adoptedStyleSheets', {
+    ...original,
+    set(value) {
+      window['__adoptedAssignments'].count++;
+      set.call(this, value);
+    },
+  });
+}
+
+/**
  * @param {string} html
  * @param {(ctx: {
  *   vm: Awaited<ReturnType<typeof launchWithViolentmonkey>>,
- *   open: (scheme: Scheme) => Promise<Page>,
+ *   open: (scheme: Scheme, spy?: boolean) => Promise<Page>,
  * }) => Promise<void>} body
  */
 async function withSite(html, body) {
@@ -69,8 +87,9 @@ async function withSite(html, body) {
     await vm.install(script);
     await body({
       vm,
-      async open(scheme) {
+      async open(scheme, spy = false) {
         const page = await vm.context.newPage();
+        if (spy) await page.addInitScript(countAdoptedAssignments);
         await page.emulateMedia({ colorScheme: scheme });
         await page.goto(`${site.origin}/`);
         return page;
@@ -182,5 +201,78 @@ test('the pin comes back after the page drops it, and status tells the truth', a
     });
     await expect.poll(() => backgroundOf(page)).toBe(BLACK);
     expect(await rootColorScheme()).toBe('dark');
+  });
+});
+
+/**
+ * Opens the dark-saved page with the assignment counter installed and lets the pin settle.
+ * @param {Parameters<Parameters<typeof withSite>[1]>[0]} ctx
+ * @returns {Promise<Page>}
+ */
+async function settledDarkPage({ vm, open }) {
+  const setup = await open('light');
+  await choose(vm.context, vm.extensionId, setup, 'Prefer dark');
+  await setup.close();
+  const page = await open('light', true);
+  await expect.poll(() => backgroundOf(page)).toBe(BLACK);
+  await page.waitForTimeout(500);
+  return page;
+}
+
+test('writing a css variable to html every frame causes no re-checks', async () => {
+  await withSite(await fixture('ld-toggle.html'), async (ctx) => {
+    const page = await settledDarkPage(ctx);
+    const assignments = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const counter = window['__adoptedAssignments'];
+          const before = counter.count;
+          let n = 0;
+          const tick = () => {
+            document.documentElement.style.setProperty('--scroll', String(n));
+            if (++n < 90) requestAnimationFrame(tick);
+            else requestAnimationFrame(() => resolve(counter.count - before));
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    expect(assignments).toBeLessThanOrEqual(2);
+    expect(await backgroundOf(page)).toBe(BLACK);
+  });
+});
+
+test('class toggles on html are re-checked at most once per frame', async () => {
+  await withSite(await fixture('ld-toggle.html'), async (ctx) => {
+    const page = await settledDarkPage(ctx);
+    const { assignments, frames, toggles } = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const counter = window['__adoptedAssignments'];
+          const before = counter.count;
+          let frames = 0;
+          let toggles = 0;
+          let running = true;
+          const frame = () => {
+            frames++;
+            if (running) requestAnimationFrame(frame);
+          };
+          requestAnimationFrame(frame);
+          const toggle = () => {
+            document.documentElement.classList.toggle('busy');
+            if (++toggles < 200) setTimeout(toggle, 0);
+            else {
+              running = false;
+              requestAnimationFrame(() =>
+                resolve({ assignments: counter.count - before, frames, toggles }),
+              );
+            }
+          };
+          toggle();
+        }),
+    );
+    expect(toggles).toBeGreaterThan(frames);
+    expect(assignments).toBeGreaterThan(0);
+    expect(assignments).toBeLessThanOrEqual(2 * (frames + 1));
+    expect(await backgroundOf(page)).toBe(BLACK);
   });
 });

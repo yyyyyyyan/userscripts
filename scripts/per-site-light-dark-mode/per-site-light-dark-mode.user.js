@@ -201,6 +201,20 @@
     }
   }
 
+  let pinQueued = false;
+
+  // Rechecking forces a whole-document style recalculation, so bursts collapse into one per frame.
+  function schedulePin() {
+    if (pinQueued) return;
+    pinQueued = true;
+    const run = () => {
+      pinQueued = false;
+      pinColorScheme();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else queueMicrotask(run);
+  }
+
   const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
 
   /** @param {Element & { sheet?: CSSStyleSheet | null }} element */
@@ -291,7 +305,7 @@
         }
       }
     }
-    if (stylesChanged) pinColorScheme();
+    if (stylesChanged) schedulePin();
   }).observe(document, {
     subtree: true,
     childList: true,
@@ -306,12 +320,37 @@
       const target = /** @type {Element} */ (event.target);
       if (target.nodeType === Node.ELEMENT_NODE && ['link', 'style'].includes(target.localName)) {
         processElement(target);
-        pinColorScheme();
+        schedulePin();
       }
     },
     true,
   );
-  new MutationObserver(pinColorScheme).observe(document.documentElement, { attributes: true });
+  /** @param {HTMLElement} root */
+  function watchRoot(root) {
+    let inlineScheme = root.style.getPropertyValue('color-scheme');
+    new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.attributeName === 'style') {
+          const current = root.style.getPropertyValue('color-scheme');
+          if (current === inlineScheme) continue;
+          inlineScheme = current;
+        }
+        schedulePin();
+        return;
+      }
+    }).observe(root, { attributes: true });
+  }
+
+  if (document.documentElement) {
+    watchRoot(document.documentElement);
+  } else {
+    const rootWaiter = new MutationObserver(() => {
+      if (!document.documentElement) return;
+      rootWaiter.disconnect();
+      watchRoot(document.documentElement);
+    });
+    rootWaiter.observe(document, { childList: true });
+  }
 
   document.addEventListener('DOMContentLoaded', fullScan, { once: true });
   window.addEventListener('load', fullScan, { once: true });
