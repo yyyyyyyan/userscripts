@@ -92,8 +92,9 @@ and fill in the script-specific list.
   - [ ] <site>
 ```
 
-For Per-Site Light/Dark Mode, its README promises these, so the checklist lists
-them and the release waits until each is checked:
+For Per-Site Light/Dark Mode, the script-specific list is below. The sites are
+the ones its README names as tested. The release waits until each item is
+checked:
 
 - [ ] Sites, each with **Dark for** selected while the browser is in light:
   - [ ] react.dev
@@ -146,7 +147,9 @@ release of that script.
    with the sync type set to **Automatic**.
 4. Set the additional info sync address to
    `https://raw.githubusercontent.com/yyyyyyyan/userscripts/dist/<slug>.md`.
-5. Make a follow-up patch release. If Greasy Fork shows the new version, the
+5. In a normal pull request, replace "Coming soon" in the root `README.md`
+   table with the script's Greasy Fork install link.
+6. Make a follow-up patch release. If Greasy Fork shows the new version, the
    webhook works.
 
 ## Recover from a failed publish run
