@@ -123,6 +123,16 @@
     hooks: /** @type {string[]} */ ([]),
   };
 
+  function pinApplied() {
+    return pinSheet !== null && document.adoptedStyleSheets.includes(pinSheet);
+  }
+
+  /** @returns {'none' | 'pinned' | 'dropped' | 'site' | 'failed'} */
+  function pinState() {
+    if (pinDecision === 'pinned') return pinApplied() ? 'pinned' : 'dropped';
+    return pinDecision;
+  }
+
   /**
    * Saves `next` for `site`. A choice saved on the www host itself would otherwise still win
    * over the new one, so it is removed too.
@@ -353,18 +363,21 @@
     processSheet(sheet);
   }
 
-  function pinApplied() {
-    return pinSheet !== null && document.adoptedStyleSheets.includes(pinSheet);
-  }
+  const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
+  const schemeMeta = 'meta[name="color-scheme" i]';
+  const schemeSelector = `${selector}, ${schemeMeta}`;
+  const schemeTags = ['style', 'link', 'source', 'meta'];
+  const observed = {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['media', 'href', 'rel', 'disabled', 'content'],
+  };
 
-  /** @returns {'none' | 'pinned' | 'dropped' | 'site' | 'failed'} */
-  function pinState() {
-    if (pinDecision === 'pinned') return pinApplied() ? 'pinned' : 'dropped';
-    return pinDecision;
-  }
-
-  // Judges the page by the value it declares with the pin lifted, so a single value (the
-  // site's own switch, whatever its selector) is left alone and only "light dark" is steered.
+  /**
+   * Judges the page by the value it declares with the pin lifted, so a single value (the
+   * site's own switch, whatever its selector) is left alone and only "light dark" is steered.
+   */
   function pinColorScheme() {
     const root = document.documentElement;
     if (!root || document.readyState === 'loading') return;
@@ -401,7 +414,10 @@
 
   let pinQueued = false;
 
-  // Rechecking forces a whole-document style recalculation, so bursts collapse into one per frame.
+  /**
+   * Rechecking forces a whole-document style recalculation, so bursts collapse into one per
+   * frame.
+   */
   function schedulePin() {
     if (pinQueued) return;
     pinQueued = true;
@@ -418,16 +434,44 @@
     if (/color-scheme/i.test(String(text))) schedulePin();
   }
 
-  const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
-  const schemeMeta = 'meta[name="color-scheme" i]';
-  const schemeSelector = `${selector}, ${schemeMeta}`;
-  const schemeTags = ['style', 'link', 'source', 'meta'];
-  const observed = {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    attributeFilter: ['media', 'href', 'rel', 'disabled', 'content'],
-  };
+  // The parser adds every element as its own record, so a large page delivers tens of thousands
+  // of them and each property read counts.
+  const observer = new MutationObserver((mutations) => {
+    let stylesChanged = false;
+    const parsing = document.readyState === 'loading';
+    for (let i = 0, count = mutations.length; i < count; i++) {
+      const mutation = mutations[i];
+      const type = mutation.type;
+      const target = /** @type {Element} */ (mutation.target);
+      if (type === 'childList') {
+        if (target.localName === 'style') {
+          processStyleElement(target);
+          stylesChanged = true;
+          continue;
+        }
+        const added = mutation.addedNodes;
+        for (let j = 0; j < added.length; j++) if (processSubtree(added[j])) stylesChanged = true;
+        // Removals only call for a re-check, which the scan at DOMContentLoaded schedules anyway.
+        if (parsing) continue;
+        const removed = mutation.removedNodes;
+        for (let j = 0; j < removed.length; j++) if (holdsStyles(removed[j])) stylesChanged = true;
+      } else if (type === 'attributes') {
+        if (mutation.attributeName === 'content') {
+          if (isSchemeMeta(target)) stylesChanged = true;
+        } else if (['link', 'style', 'source'].includes(target.localName)) {
+          processStyleElement(target);
+          stylesChanged = true;
+        }
+      } else {
+        const style = target.parentElement;
+        if (style?.localName === 'style') {
+          processStyleElement(style);
+          stylesChanged = true;
+        }
+      }
+    }
+    if (stylesChanged) schedulePin();
+  });
 
   /**
    * Rewrites the element's `media` attribute and, for `<style>`, starts watching its text.
@@ -482,45 +526,6 @@
     );
   }
 
-  // The parser adds every element as its own record, so a large page delivers tens of thousands
-  // of them and each property read counts.
-  const observer = new MutationObserver((mutations) => {
-    let stylesChanged = false;
-    const parsing = document.readyState === 'loading';
-    for (let i = 0, count = mutations.length; i < count; i++) {
-      const mutation = mutations[i];
-      const type = mutation.type;
-      const target = /** @type {Element} */ (mutation.target);
-      if (type === 'childList') {
-        if (target.localName === 'style') {
-          processStyleElement(target);
-          stylesChanged = true;
-          continue;
-        }
-        const added = mutation.addedNodes;
-        for (let j = 0; j < added.length; j++) if (processSubtree(added[j])) stylesChanged = true;
-        // Removals only call for a re-check, which the scan at DOMContentLoaded schedules anyway.
-        if (parsing) continue;
-        const removed = mutation.removedNodes;
-        for (let j = 0; j < removed.length; j++) if (holdsStyles(removed[j])) stylesChanged = true;
-      } else if (type === 'attributes') {
-        if (mutation.attributeName === 'content') {
-          if (isSchemeMeta(target)) stylesChanged = true;
-        } else if (['link', 'style', 'source'].includes(target.localName)) {
-          processStyleElement(target);
-          stylesChanged = true;
-        }
-      } else {
-        const style = target.parentElement;
-        if (style?.localName === 'style') {
-          processStyleElement(style);
-          stylesChanged = true;
-        }
-      }
-    }
-    if (stylesChanged) schedulePin();
-  });
-
   /** @param {Event} event */
   function onLoad(event) {
     const target = /** @type {Element} */ (event.target);
@@ -561,8 +566,10 @@
 
   let shadowRootsFound = false;
 
-  // Visiting every element is slow on large pages, so existing roots are searched for once, after
-  // parsing has created every declarative one. Later roots arrive through the attachShadow hook.
+  /**
+   * Visiting every element is slow on large pages, so existing roots are searched for once, after
+   * parsing has created every declarative one. Later roots arrive through the attachShadow hook.
+   */
   function fullScan() {
     scanRoot(document);
     if (!shadowRootsFound && document.readyState !== 'loading') {
