@@ -44,7 +44,7 @@ jobs:
       - name: Check fragments and versions
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+          NO_CHANGELOG: ${{ github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
         run: |
           if [[ "$BASE" =~ ^0+$ ]]; then
             echo "::notice::No previous commit to compare against; skipping the change checks."
