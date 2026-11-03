@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["eslint-plugin-userscripts"],
+  "ignorePatterns": ["*.mjs", "tools/**", "tests/**"],
+  "env": {
+    "browser": true,
+    "greasemonkey": true,
+    "es2024": true
+  },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "settings": {
+    "userscriptVersions": {
+      "violentmonkey": ">=2.20.0",
+      "tampermonkey": ">=5.0.0"
+    }
+  },
+  "rules": {
+    "no-undef": "error",
+    "userscripts/filename-user": "error",
+    "userscripts/no-invalid-metadata": "error",
+    "userscripts/require-name": "error",
+    "userscripts/require-description": "error",
+    "userscripts/require-version": "error",
+    "userscripts/no-invalid-grant": "error",
+    "userscripts/no-invalid-headers": "error",
+    "userscripts/better-use-match": "error",
+    "userscripts/align-attributes": "error",
+    "userscripts/metadata-spacing": "error",
+    "userscripts/compat-headers": "error",
+    "userscripts/compat-grant": "error"
+  }
+}

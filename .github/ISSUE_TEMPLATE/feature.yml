@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a change to a script.
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: script
+    attributes:
+      label: Script
+      options:
+        - Per-Site Light/Dark Mode (per-site-light-dark-mode)
+        - Reload Until (reload-until)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like?
+      description: Describe the problem you want solved, then the change you have in mind.
+    validations:
+      required: true

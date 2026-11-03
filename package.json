@@ -1,0 +1,27 @@
+{
+  "name": "userscripts",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/tools/*.test.mjs\"",
+    "pree2e": "node tools/fetch-violentmonkey.mjs",
+    "e2e": "playwright test",
+    "typecheck": "tsc -p jsconfig.json",
+    "lint": "oxlint --no-error-on-unmatched-pattern",
+    "format": "oxfmt"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "@playwright/test": "1.64.1",
+    "@violentmonkey/types": "0.3.4",
+    "eslint-plugin-userscripts": "0.5.6",
+    "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

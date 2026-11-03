@@ -1,1 +1,6 @@
 !/AGENTS.md
+node_modules/
+.cache/
+test-results/
+playwright-report/
+.vale/styles/Google/

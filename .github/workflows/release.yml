@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: ['scripts/**']
+
+permissions: {}
+
+concurrency: release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Validate the pushed range
+        id: range
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [[ "$BEFORE" =~ ^0+$ ]]; then
+            echo "::notice::Branch creation has no previous commit; nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$BEFORE" "$AFTER"; then
+            echo "::error::${BEFORE} is not an ancestor of ${AFTER}; main was force-pushed, so the releases in this push cannot be determined."
+            exit 1
+          fi
+      - name: Prepare the dist worktree
+        if: steps.range.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git show-ref --verify --quiet refs/remotes/origin/dist; then
+            git worktree add --detach dist origin/dist
+          else
+            git worktree add --orphan -b dist dist
+            printf '%s\n' '# dist' '' 'Published userscripts, written by the release workflow. Do not edit by hand.' > dist/README.md
+            git -C dist add README.md
+            git -C dist commit -q -m "Initialize dist"
+          fi
+      - name: Publish releases to dist
+        if: steps.range.outputs.skip != 'true'
+        id: publish
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          node tools/release-publish.mjs --before "$BEFORE" --after "$AFTER" --dist dist > "$RUNNER_TEMP/tags.txt"
+          echo "Releases:"
+          cat "$RUNNER_TEMP/tags.txt"
+      - name: Push dist and tags
+        if: steps.range.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ ! -s "$RUNNER_TEMP/tags.txt" ]]; then
+            echo "::notice::No releases in this push."
+            exit 0
+          fi
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C dist push "$remote" HEAD:refs/heads/dist
+          while read -r tag commit; do
+            git tag "$tag" "$commit"
+            git push "$remote" "refs/tags/$tag"
+          done < "$RUNNER_TEMP/tags.txt"
