@@ -111,6 +111,24 @@ checked:
   applies or **Status** reports that the script could not run inside the page.
   This path has no automated test.
 
+### Extra checks for Reload Until
+
+The automated tests run Reload Until in Violentmonkey on Chromium only. Add
+these lines to its checklist:
+
+```markdown
+- [ ] Firefox: an alarm with the default alert style shows one desktop
+      notification, and **Acknowledge** closes it.
+- [ ] Firefox: an alarm with the insistent alert style repeats its desktop
+      notification about once a minute, and **Acknowledge** stops it.
+- [ ] Firefox: on a site with a strict Content Security Policy, such as
+      github.com, the settings panel and the alarm are styled.
+- [ ] Firefox: a reload that a server redirects to another site raises the
+      alarm on the page where it ended.
+- [ ] Tampermonkey: an alarm shows its desktop notification, and
+      **Acknowledge** clears the alarm on the page.
+```
+
 While the repository is private, raw files need a sign-in, so a pull request's
 file can't be installed from its address. Install from a local copy instead:
 check out the release branch and paste the script file into a new script in your

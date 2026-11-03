@@ -240,7 +240,7 @@ export async function launchWithViolentmonkey(options = {}) {
           await page.goto(`${site.origin}/x.user.js`).catch(() => {});
           await page.waitForURL((url) => url.host === extensionId, { timeout: 20_000 });
           await page.locator('#confirm').click({ timeout: 20_000 });
-          await page.getByText('Script installed.').waitFor({ timeout: 20_000 });
+          await page.getByText(/Script (installed|updated)\./).waitFor({ timeout: 20_000 });
           // Pages opened right after the install can miss the new script.
           await page.waitForTimeout(2000);
         } finally {

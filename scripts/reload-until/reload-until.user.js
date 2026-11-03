@@ -37,6 +37,11 @@
    */
 
   /**
+   * How an alarm reaches the user. Every style keeps the alarm on the page until Acknowledge.
+   * @typedef {'page' | 'page-and-desktop' | 'insistent'} AlertStyle
+   */
+
+  /**
    * @typedef {object} Watch
    * @property {string} url
    * @property {boolean} enabled
@@ -48,15 +53,7 @@
    * @property {number} intervalSeconds
    * @property {number} settleSeconds
    * @property {number} confirmSeconds
-   * @property {string} notificationTitle
-   * @property {string} notificationText
-   * @property {boolean} desktopNotification
-   * @property {boolean} sound
-   * @property {number} soundRepeatSeconds
-   * @property {number} volume
-   * @property {boolean} requireExplicitDismissal
-   * @property {number} notificationRepeatSeconds
-   * @property {string} notificationBackend
+   * @property {AlertStyle} alertStyle
    * @property {PendingAlert | null} pendingAlert
    */
 
@@ -90,6 +87,10 @@
   const HANDOFF_START_SLACK_MS = 500;
   const HANDOFF_CLAIM_DELAY_MS = 3000;
   const MAX_SECONDS = 86400;
+  const REMINDER_INTERVAL_MS = 60_000;
+  const SOUND_VOLUME = 0.25;
+  /** @type {readonly AlertStyle[]} */
+  const ALERT_STYLES = ['page', 'page-and-desktop', 'insistent'];
   /** @type {Omit<Watch, 'url'>} */
   const DEFAULTS = {
     enabled: false,
@@ -101,17 +102,41 @@
     intervalSeconds: 30,
     settleSeconds: 5,
     confirmSeconds: 3,
-    notificationTitle: 'Reload Until — condition met!',
-    notificationText: 'The watched condition is met. Check the page now.',
-    desktopNotification: true,
-    sound: true,
-    soundRepeatSeconds: 4,
-    volume: 0.25,
-    requireExplicitDismissal: true,
-    notificationRepeatSeconds: 30,
-    notificationBackend: 'auto',
+    alertStyle: 'page-and-desktop',
     pendingAlert: null,
   };
+
+  const PANEL_CSS = `
+    *{box-sizing:border-box}
+    .panel{width:min(650px,94vw);max-height:90vh;overflow:auto;background:#17202a;color:#fff;border:1px solid #777;border-radius:12px;padding:20px;font:14px/1.5 system-ui,sans-serif;box-shadow:0 12px 50px #0009}
+    h2{margin:0 0 8px;font-size:22px}
+    p{margin:6px 0 14px;color:#d1d5db}
+    label{display:block}
+    .field{margin:12px 0 0}
+    .check{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    .check small{flex-basis:100%}
+    input:not([type=checkbox]),select,textarea{display:block;width:100%;margin-top:4px;padding:8px;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;font:inherit}
+    input[type=checkbox]{margin:0}
+    [aria-invalid=true]{border-color:#ff5252;outline:2px solid #ff5252}
+    small{display:block;color:#bfc8d2}
+    .field-error{flex-basis:100%;margin:4px 0 0;color:#ffb4b4}
+    button{font:inherit;padding:7px 12px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#111;cursor:pointer}
+    .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+    .error{color:#ffb4b4;white-space:pre-wrap;margin-top:12px}
+    details{margin-top:16px}
+    summary{cursor:pointer;font-weight:600}
+  `;
+
+  const WIDGET_CSS = `
+    .box{background:#17202a;color:#fff;border:2px solid #7f8c8d;border-radius:10px;padding:14px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 3px 18px #0006}
+    .box.alarm{border-color:#ff5252}
+    .notice{margin-top:6px;white-space:pre-wrap}
+    .detail{font-size:12px;color:#d1d5db;margin-top:6px}
+    .notice:empty,.detail:empty{display:none}
+    .actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+    button{font:inherit;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;padding:5px 9px;cursor:pointer}
+    [hidden]{display:none}
+  `;
 
   /** A validation failure that belongs to one settings field. */
   class FieldError extends Error {
@@ -309,11 +334,14 @@
   function raiseRedirectAlarm({ watchUrl, watchOrigin, watchHost }, landedUrl) {
     const watch = readWatch(watchUrl);
     if (!watch) return;
-    if (!watch.pendingAlert)
+    if (!watch.pendingAlert) {
+      const at = Date.now();
       updateWatch(watchUrl, {
         enabled: false,
-        pendingAlert: { kind: 'redirect', at: Date.now(), landedUrl, watchOrigin, watchHost },
+        pendingAlert: { kind: 'redirect', at, landedUrl, watchOrigin, watchHost },
       });
+      raisedHere = at;
+    }
     awayAlarmUrl = watchUrl;
   }
 
@@ -347,19 +375,35 @@
   }
 
   /**
+   * Builds a watch from stored or edited fields. Fields a watch doesn't have, such as the
+   * notification settings of earlier versions, are dropped.
+   * @param {string} url
+   * @param {object} fields
+   * @returns {Watch}
+   */
+  function toWatch(url, fields) {
+    /** @type {Record<string, unknown>} */
+    const watch = { ...DEFAULTS, url };
+    for (const [key, value] of Object.entries(fields)) {
+      if (Object.hasOwn(watch, key)) watch[key] = value;
+    }
+    return /** @type {Watch} */ (watch);
+  }
+
+  /**
    * @param {string} url
    * @returns {Watch | null}
    */
   function readWatch(url) {
-    const stored = /** @type {Watch | null} */ (GM_getValue(WATCH_PREFIX + url, null));
-    return stored && { ...DEFAULTS, ...stored };
+    const stored = /** @type {unknown} */ (GM_getValue(WATCH_PREFIX + url, null));
+    return typeof stored === 'object' && stored !== null ? toWatch(url, stored) : null;
   }
 
   /** @param {Watch} watch */
   function writeWatch(watch) {
     if (/** @type {number} */ (GM_getValue('schema', 0)) !== SCHEMA_VERSION)
       GM_setValue('schema', SCHEMA_VERSION);
-    GM_setValue(WATCH_PREFIX + watch.url, watch);
+    GM_setValue(WATCH_PREFIX + watch.url, toWatch(watch.url, watch));
   }
 
   /**
@@ -381,10 +425,16 @@
     GM_deleteValue(WATCH_PREFIX + url);
   }
 
-  /** @returns {Watch[]} */
-  function listWatches() {
+  /**
+   * Lists one site's watches. Other sites' keys are only compared as strings, never read,
+   * parsed or shown, because the page can replace `URL` and can read what the panel shows.
+   * @param {string} origin
+   * @returns {Watch[]}
+   */
+  function listWatches(origin) {
+    const prefix = WATCH_PREFIX + origin + '/';
     return GM_listValues()
-      .filter((key) => key.startsWith(WATCH_PREFIX))
+      .filter((key) => key.startsWith(prefix))
       .map((key) => readWatch(key.slice(WATCH_PREFIX.length)))
       .filter((watch) => watch !== null);
   }
@@ -410,18 +460,12 @@
         'intervalSeconds',
         'Use at least ' + MIN_INTERVAL_SECONDS + ' seconds and at most ' + MAX_SECONDS + '.',
       );
-    for (const key of /** @type {const} */ (['soundRepeatSeconds', 'notificationRepeatSeconds'])) {
-      if (!Number.isFinite(watch[key]) || watch[key] < 1 || watch[key] > MAX_SECONDS)
-        throw new FieldError(key, 'Use a number from 1 to ' + MAX_SECONDS + '.');
-    }
     for (const key of /** @type {const} */ (['settleSeconds', 'confirmSeconds'])) {
       if (!Number.isFinite(watch[key]) || watch[key] < 0 || watch[key] > MAX_SECONDS)
         throw new FieldError(key, 'Use a number from 0 to ' + MAX_SECONDS + '.');
     }
-    if (!['auto', 'manager'].includes(watch.notificationBackend))
-      throw new FieldError('notificationBackend', 'Choose a notification method.');
-    if (!Number.isFinite(watch.volume) || watch.volume < 0 || watch.volume > 1)
-      throw new FieldError('volume', 'Use a volume from 0 to 1.');
+    if (!ALERT_STYLES.includes(watch.alertStyle))
+      throw new FieldError('alertStyle', 'Choose an alert style.');
     if (typeof watch.text !== 'string') throw new FieldError('text', 'Enter text or leave blank.');
     if (typeof watch.selector !== 'string' || !watch.selector.trim())
       throw new FieldError('selector', 'Enter a CSS selector.');
@@ -457,22 +501,357 @@
     return { found, satisfied: watch.condition === 'appears' ? found : !found };
   }
 
-  // Use the standard DOM API, not unsafeWindow, so Firefox can wrap arguments
-  // normally across its userscript sandbox.
-  function nativeAPI() {
+  /**
+   * Applies a change to a watch in memory and in storage.
+   * @param {Watch} watch
+   * @param {Partial<Watch>} patch
+   * @returns {boolean} Whether the change reached storage.
+   */
+  function persistWatch(watch, patch) {
+    Object.assign(watch, patch);
     try {
-      return window.isSecureContext !== false && typeof window.Notification === 'function'
-        ? window.Notification
-        : null;
+      return updateWatch(watch.url, patch);
     } catch {
-      return null;
+      return false;
     }
   }
-  function nativePermission() {
+
+  /** @param {number} milliseconds */
+  function toSeconds(milliseconds) {
+    return Math.max(0, Math.ceil(milliseconds / 1000));
+  }
+
+  /**
+   * @typedef {object} Progress
+   * @property {'settling' | 'confirming' | 'waiting' | 'reloading'} phase
+   * @property {number} secondsLeft
+   * @property {boolean} found
+   */
+
+  /** @typedef {'user' | 'not-ready' | 'invalid' | 'error' | 'storage'} StopReason */
+
+  /**
+   * @typedef {object} WatcherReport
+   * @property {() => void} onStarted
+   * @property {(progress: Progress) => void} onProgress
+   * @property {(reason: StopReason, detail?: string) => void} onStopped
+   * @property {(persisted: boolean) => void} onTriggered The watch now carries its pending alarm.
+   */
+
+  /**
+   * The timing loop for a watch on its own page: lets the page settle, checks the condition,
+   * confirms it, and reloads. It reports what it does and never touches the widget.
+   * @param {Watch} watch
+   * @param {WatcherReport} report
+   */
+  function createWatcher(watch, report) {
+    /** @type {ReturnType<typeof setInterval> | undefined} */
+    let timer = undefined;
+    let startedAt = 0;
+    /** @type {number | null} */
+    let candidateSince = null;
+
+    function stop() {
+      clearInterval(timer);
+      timer = undefined;
+      candidateSince = null;
+    }
+
+    /**
+     * @param {StopReason} reason
+     * @param {string} [detail]
+     */
+    function pause(reason, detail) {
+      stop();
+      persistWatch(watch, { enabled: false });
+      report.onStopped(reason, detail);
+    }
+
+    function tick() {
+      if (timer === undefined) return;
+      try {
+        if (currentUrl() !== watch.url) {
+          followNavigation();
+          return;
+        }
+        const now = performance.now();
+        const elapsed = now - startedAt;
+        if (elapsed < watch.settleSeconds * 1000) {
+          report.onProgress({
+            phase: 'settling',
+            secondsLeft: toSeconds(watch.settleSeconds * 1000 - elapsed),
+            found: false,
+          });
+          return;
+        }
+        if (watch.readySelector && !document.querySelector(watch.readySelector)) {
+          pause('not-ready');
+          return;
+        }
+        const { found, satisfied } = evaluateCondition(watch);
+        if (satisfied) {
+          candidateSince ??= now;
+          const remaining = watch.confirmSeconds * 1000 - (now - candidateSince);
+          report.onProgress({ phase: 'confirming', secondsLeft: toSeconds(remaining), found });
+          if (remaining > 0) return; // Never reload in the middle of confirming a possible match.
+          stop();
+          const persisted = persistWatch(watch, {
+            enabled: false,
+            pendingAlert: {
+              kind: 'condition',
+              at: Date.now(),
+              landedUrl: watch.url,
+              watchOrigin: location.origin,
+              watchHost: location.hostname,
+            },
+          });
+          report.onTriggered(persisted);
+          return;
+        }
+        candidateSince = null;
+        const remaining = watch.intervalSeconds * 1000 - elapsed;
+        report.onProgress({
+          phase: remaining > 0 ? 'waiting' : 'reloading',
+          secondsLeft: toSeconds(remaining),
+          found,
+        });
+        if (remaining > 0) return;
+        stop();
+        writeHandoff(watch.url);
+        location.reload();
+      } catch (error) {
+        pause('error', /** @type {Error} */ (error).message);
+      }
+    }
+
+    return {
+      get running() {
+        return timer !== undefined;
+      },
+      /** @param {boolean} byUser Whether the user turned the watch on, as opposed to a page load. */
+      start(byUser) {
+        stop();
+        try {
+          validateWatch(watch);
+        } catch (error) {
+          pause('invalid', /** @type {Error} */ (error).message);
+          return;
+        }
+        if (byUser && !persistWatch(watch, { enabled: true })) {
+          report.onStopped('storage');
+          return;
+        }
+        startedAt = performance.now();
+        timer = setInterval(tick, 250);
+        report.onStarted();
+        tick();
+      },
+      stop,
+      pause: () => pause('user'),
+    };
+  }
+
+  /** @type {AudioContext | null} */
+  let audio = null;
+
+  /** @returns {string} What the widget should say about the sound; empty when it played. */
+  function beep() {
     try {
-      return nativeAPI()?.permission || 'unavailable';
+      const AudioContext = /** @type {typeof window.AudioContext} */ (
+        window.AudioContext || /** @type {LegacyAudioWindow} */ (window).webkitAudioContext
+      );
+      audio ??= new AudioContext();
+      if (audio.state !== 'running') {
+        audio.resume().catch(() => {});
+        return 'Sound may be blocked: allow audio autoplay for this site.';
+      }
+      for (let repeat = 0; repeat < 3; repeat++) {
+        const oscillator = audio.createOscillator();
+        const gain = audio.createGain();
+        oscillator.connect(gain);
+        gain.connect(audio.destination);
+        const start = audio.currentTime + repeat * 0.6;
+        oscillator.frequency.setValueAtTime(880, start);
+        oscillator.frequency.setValueAtTime(660, start + 0.2);
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(SOUND_VOLUME, start + 0.02);
+        gain.gain.setValueAtTime(SOUND_VOLUME, start + 0.4);
+        gain.gain.linearRampToValueAtTime(0, start + 0.5);
+        oscillator.addEventListener('ended', () => {
+          oscillator.disconnect();
+          gain.disconnect();
+        });
+        oscillator.start(start);
+        oscillator.stop(start + 0.5);
+      }
+      return '';
+    } catch (error) {
+      return 'Sound unavailable: ' + /** @type {Error} */ (error).message;
+    }
+  }
+
+  /**
+   * Shows a desktop notification through the userscript manager. Clicking it brings this tab to
+   * the front.
+   * @param {string} title
+   * @param {string} text
+   * @returns {{ handle: VMScriptGMNotificationControl | undefined, problem: string }} The handle
+   *   is missing where the manager doesn't return one.
+   */
+  function notifyDesktop(title, text) {
+    try {
+      const handle = /** @type {VMScriptGMNotificationControl | undefined} */ (
+        GM_notification({ title, text, onclick: () => window.focus() })
+      );
+      return { handle, problem: '' };
+    } catch (error) {
+      return {
+        handle: undefined,
+        problem:
+          'The desktop notification failed: ' +
+          /** @type {Error} */ (error).message +
+          '. The alarm stays on this page.',
+      };
+    }
+  }
+
+  /** @param {VMScriptGMNotificationControl | undefined} handle */
+  function removeNotification(handle) {
+    try {
+      handle?.remove().catch(() => {});
     } catch {
-      return 'unavailable';
+      /* A notification the user already closed needs no cleanup. */
+    }
+  }
+
+  /**
+   * @typedef {object} AlarmMessage
+   * @property {string} title
+   * @property {string} text
+   */
+
+  /**
+   * The alarm this document is sounding. It lives outside the widget so that rebuilding the
+   * widget, after Settings closes or the page changes route, neither repeats nor drops it.
+   * @typedef {object} ActiveAlarm
+   * @property {string} url
+   * @property {number} at
+   * @property {ReturnType<typeof setTimeout> | undefined} reminder
+   * @property {VMScriptGMNotificationControl | undefined} notification
+   * @property {string} problem
+   * @property {(problem: string) => void} onProblem
+   */
+
+  /** @type {ActiveAlarm | null} */
+  let activeAlarm = null;
+  /** @type {number | null} The `at` of an alarm this document raised and hasn't announced yet. */
+  let raisedHere = null;
+
+  /**
+   * Sounds a watch's pending alarm according to its alert style. Only the document that raised
+   * the alarm announces it. A page that shows it again, after a reload, a route change or
+   * closing Settings, stays quiet; insistent reminders keep their one-minute schedule from when
+   * the alarm was raised.
+   * @param {Watch} watch
+   * @param {AlarmMessage} message
+   * @param {(problem: string) => void} onProblem Receives what the widget should say about sound
+   *   or desktop delivery.
+   */
+  function soundAlarm(watch, message, onProblem) {
+    const alert = watch.pendingAlert;
+    if (!alert) return;
+    if (activeAlarm?.url === watch.url && activeAlarm.at === alert.at) {
+      activeAlarm.onProblem = onProblem;
+      onProblem(activeAlarm.problem);
+      return;
+    }
+    silenceAlarm();
+    /** @type {ActiveAlarm} */
+    const alarm = {
+      url: watch.url,
+      at: alert.at,
+      reminder: undefined,
+      notification: undefined,
+      problem: '',
+      onProblem,
+    };
+    activeAlarm = alarm;
+    const insistent = watch.alertStyle === 'insistent';
+    function ring() {
+      const problems = [];
+      if (watch.alertStyle !== 'page') {
+        removeNotification(alarm.notification);
+        const sent = notifyDesktop(message.title, message.text);
+        alarm.notification = sent.handle;
+        problems.push(sent.problem);
+      }
+      if (insistent) problems.push(beep());
+      alarm.problem = problems.filter(Boolean).join(' ');
+      alarm.onProblem(alarm.problem);
+    }
+    if (raisedHere === alert.at) {
+      raisedHere = null;
+      ring();
+    }
+    if (!insistent) return;
+    const remindLater = () => {
+      const sinceRaised = Math.max(0, Date.now() - alert.at);
+      alarm.reminder = setTimeout(
+        () => {
+          ring();
+          remindLater();
+        },
+        REMINDER_INTERVAL_MS - (sinceRaised % REMINDER_INTERVAL_MS),
+      );
+    };
+    remindLater();
+  }
+
+  function silenceAlarm() {
+    if (!activeAlarm) return;
+    clearTimeout(activeAlarm.reminder);
+    removeNotification(activeAlarm.notification);
+    activeAlarm = null;
+  }
+
+  /**
+   * Stops the alarm this document sounds unless the watch shown now still has it pending.
+   * @param {Watch | null} shown
+   */
+  function keepAlarmFor(shown) {
+    if (!activeAlarm) return;
+    if (shown?.url !== activeAlarm.url || shown.pendingAlert?.at !== activeAlarm.at) silenceAlarm();
+  }
+
+  /**
+   * Listens only to events the user caused. A page that got hold of one of the script's shadow
+   * roots could otherwise press its buttons from its own JavaScript.
+   * @param {EventTarget} target
+   * @param {string} type
+   * @param {(event: Event) => void} handler
+   */
+  function onUserEvent(target, type, handler) {
+    target.addEventListener(type, (event) => {
+      if (event.isTrusted) handler(event);
+    });
+  }
+
+  /**
+   * Styles a shadow root with a constructed stylesheet, which a page's Content Security Policy
+   * doesn't block the way it blocks `<style>` elements. Browsers without constructed
+   * stylesheets get a `<style>` element instead.
+   * @param {ShadowRoot} root
+   * @param {string} css
+   */
+  function adoptStyles(root, css) {
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      root.adoptedStyleSheets = [sheet];
+    } catch {
+      const style = document.createElement('style');
+      style.textContent = css;
+      root.prepend(style);
     }
   }
 
@@ -499,14 +878,16 @@
     if (url !== null && watch) {
       followWatchedPage(url);
       shownUrl = url;
-      if (!editor) runner = runWatch(watch);
+      keepAlarmFor(watch);
+      if (!editor) runner = showWidget(watch);
       return;
     }
     const away = findAwayAlarm();
+    keepAlarmFor(away);
     if (!away) return;
     listenTo(away.url);
     shownUrl = away.url;
-    if (!editor) runner = runWatch({ ...away, enabled: false });
+    if (!editor) runner = showWidget({ ...away, enabled: false });
   }
 
   /** @param {string} url */
@@ -539,7 +920,8 @@
     if (runner) runner.destroy();
     runner = null;
     const watch = readWatch(url);
-    if (watch?.pendingAlert) runner = runWatch({ ...watch, enabled: false });
+    keepAlarmFor(watch);
+    if (watch?.pendingAlert) runner = showWidget({ ...watch, enabled: false });
   }
 
   function followNavigation() {
@@ -557,11 +939,7 @@
     host.style.cssText =
       'position:fixed;inset:0;z-index:2147483647;background:#0009;display:grid;place-items:center;padding:12px;';
     const root = host.attachShadow({ mode: SHADOW_MODE });
-    const style = document.createElement('style');
-    style.textContent = `
-      *{box-sizing:border-box} .panel{width:min(650px,94vw);max-height:90vh;overflow:auto;background:#17202a;color:#fff;border:1px solid #777;border-radius:12px;padding:20px;font:14px/1.5 system-ui,sans-serif;box-shadow:0 12px 50px #0009}
-      h2{margin:0 0 8px;font-size:22px}p{margin:6px 0 14px;color:#d1d5db}label{display:block}.field{margin:12px 0 0}.check{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.check small{flex-basis:100%}input:not([type=checkbox]),select,textarea{display:block;width:100%;margin-top:4px;padding:8px;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;font:inherit}input[type=checkbox]{margin:0}[aria-invalid=true]{border-color:#ff5252;outline:2px solid #ff5252}small{display:block;color:#bfc8d2}.field-error{flex-basis:100%;margin:4px 0 0;color:#ffb4b4}button{font:inherit;padding:7px 12px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#111;cursor:pointer}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.error{color:#ffb4b4;white-space:pre-wrap;margin-top:12px}details{margin-top:16px}summary{cursor:pointer;font-weight:600}
-    `;
+    adoptStyles(root, PANEL_CSS);
     const panel = document.createElement('section');
     panel.className = 'panel';
     panel.setAttribute('role', 'dialog');
@@ -582,7 +960,7 @@
     add('h2', 'Reload Until settings');
     add(
       'p',
-      'Save one watch per URL. Refreshing is suspended in this tab while this panel is open.',
+      'Watches for this site only. Refreshing is suspended in this tab while this panel is open.',
     );
     const pickWrapper = add('div');
     pickWrapper.className = 'field';
@@ -593,13 +971,17 @@
     picker.name = 'savedWatch';
     const fresh = add('option', '＋ New watch for this page', picker);
     fresh.value = '';
-    for (const watch of listWatches()) {
+    for (const watch of listWatches(location.origin)) {
       const option = add('option', (watch.enabled ? 'ON — ' : 'OFF — ') + watch.url, picker);
       option.value = watch.url;
     }
     const form = add('form');
     form.noValidate = true;
-    form.addEventListener('submit', (event) => {
+    form.addEventListener('submit', (event) => event.preventDefault());
+    onUserEvent(form, 'keydown', (event) => {
+      const { key, target } = /** @type {KeyboardEvent} */ (event);
+      if (key !== 'Enter' || !(target instanceof HTMLInputElement) || target.type === 'checkbox')
+        return;
       event.preventDefault();
       saveFromForm();
     });
@@ -651,7 +1033,7 @@
       'url',
       'Page URL',
       'url',
-      'Exact URL, including query parameters. The #fragment is ignored.',
+      'Exact URL on this site, including query parameters. The #fragment is ignored.',
     ).required = true;
     field('enabled', 'Enabled — refresh this URL when it is open', 'checkbox');
     field('intervalSeconds', 'Refresh interval (seconds)', 'number').min =
@@ -672,8 +1054,20 @@
       'textarea',
       'Leave blank to match the selector alone. Extra whitespace is ignored.',
     );
+    field(
+      'alertStyle',
+      'Alert style',
+      'text',
+      'Every alarm stays on the page and in the tab title until you click Acknowledge. Desktop notifications come from your userscript manager. Whether they stay on screen, how urgent they look, and whether Do Not Disturb hides them depend on your browser and desktop. Browsers may block the sound until you have clicked on the page.',
+      form,
+      [
+        ['page', 'On this page only'],
+        ['page-and-desktop', 'On this page, plus one desktop notification'],
+        ['insistent', 'On this page, plus a desktop notification and a sound every minute'],
+      ],
+    );
     const advanced = add('details', undefined, form);
-    add('summary', 'Timing, safeguards and notification settings', advanced);
+    add('summary', 'Timing and safeguards', advanced);
     field('matchCase', 'Match case', 'checkbox', '', advanced);
     field('settleSeconds', 'Initial rendering wait (seconds)', 'number', '', advanced);
     field('confirmSeconds', 'Condition confirmation time (seconds)', 'number', '', advanced);
@@ -682,82 +1076,6 @@
       'Page-ready CSS selector (optional)',
       'text',
       'If missing, the watch pauses. Without this guard, an error or login page can make the target disappear.',
-      advanced,
-    );
-    field('notificationTitle', 'Notification title', 'text', '', advanced);
-    field('notificationText', 'Notification message', 'textarea', '', advanced);
-    field(
-      'requireExplicitDismissal',
-      'Require explicit dismissal (persistent alert)',
-      'checkbox',
-      'Repeat desktop notifications until you click Acknowledge. A pending alert returns after reload. Requests native persistence; OS urgency depends on the browser and desktop.',
-      advanced,
-    );
-    field(
-      'notificationRepeatSeconds',
-      'Repeat desktop notification every (seconds)',
-      'number',
-      'Used only for persistent alerts while this page is open. The OS may group or suppress repeated notifications.',
-      advanced,
-    ).min = '1';
-    field('desktopNotification', 'Desktop notification', 'checkbox', '', advanced);
-    field('notificationBackend', 'Notification method', 'text', '', advanced, [
-      ['auto', 'Native browser notification + automatic fallback'],
-      ['manager', 'Userscript manager only'],
-    ]);
-    const permissionStatus = add('small', '', advanced);
-    const permissionButton = add('button', 'Allow native notifications', advanced);
-    permissionButton.type = 'button';
-    function editingThisSite() {
-      try {
-        return new URL(fields.url.value).origin === new URL(location.href).origin;
-      } catch {
-        return false;
-      }
-    }
-    function showPermission() {
-      const permission = nativePermission();
-      permissionStatus.textContent = !editingThisSite()
-        ? 'Open the watch’s site to grant native notification permission there.'
-        : permission === 'granted'
-          ? 'Native notification permission granted for this site. Use Test alert after saving.'
-          : permission === 'denied'
-            ? 'Native notifications are blocked. Change this site’s browser permissions, then reopen Settings. Your userscript manager’s notification remains available.'
-            : permission === 'unavailable'
-              ? 'Native notifications are unavailable here. Your userscript manager’s notification will be used.'
-              : 'Click Allow native notifications for this site. Until allowed, your userscript manager’s notification will be used.';
-      permissionButton.disabled = !editingThisSite() || permission !== 'default';
-    }
-    permissionButton.addEventListener('click', () => {
-      if (!editingThisSite() || nativePermission() !== 'default') {
-        showPermission();
-        return;
-      }
-      // Call immediately inside the real click handler (required by Firefox).
-      try {
-        permissionButton.disabled = true;
-        /** @type {typeof Notification} */ (nativeAPI())
-          .requestPermission()
-          .then(showPermission, () => {
-            showPermission();
-            permissionStatus.textContent +=
-              ' Permission request failed; use browser site permissions.';
-          });
-      } catch {
-        showPermission();
-        permissionStatus.textContent += ' Permission request failed; use browser site permissions.';
-      }
-    });
-    fields.url.addEventListener('input', showPermission);
-    field('sound', 'Repeat an audible alarm until acknowledged', 'checkbox', '', advanced);
-    field('soundRepeatSeconds', 'Alarm repeat interval (seconds)', 'number', '', advanced).min =
-      '1';
-    const volume = field('volume', 'Volume (0–1)', 'number', '', advanced);
-    volume.max = '1';
-    volume.step = '0.05';
-    add(
-      'p',
-      'Allow audio autoplay for the site. Chromium/Linux may display persistent native notifications as critical; Firefox can keep normal urgency. Reminders and the page alert continue until Acknowledge; Do Not Disturb remains desktop-controlled.',
       advanced,
     );
     const error = add('div');
@@ -772,7 +1090,7 @@
     function action(label, fn) {
       const b = add('button', label, actions);
       b.type = 'button';
-      b.addEventListener('click', fn);
+      onUserEvent(b, 'click', fn);
       return b;
     }
     action('Save watch', saveFromForm);
@@ -829,7 +1147,6 @@
         if (input.type === 'checkbox') input.checked = Boolean(watch[name]);
         else input.value = String(watch[name] ?? defaults[name] ?? '');
       }
-      showPermission();
       remove.disabled = !url;
       error.textContent = '';
     }
@@ -857,6 +1174,11 @@
         watch.selector = watch.selector.trim();
         watch.readySelector = watch.readySelector.trim();
         validateWatch(watch);
+        if (!watch.url.startsWith(location.origin + '/'))
+          throw new FieldError(
+            'url',
+            'Enter an address on this site. To watch a page on another site, open that page and add its watch there.',
+          );
         if (watch.url !== editingURL && readWatch(watch.url))
           throw new FieldError(
             'url',
@@ -881,7 +1203,7 @@
     const initial = here !== null && readWatch(here) ? here : '';
     picker.value = initial;
     fill(initial);
-    root.append(style, panel);
+    root.append(panel);
     document.documentElement.append(host);
     fields.url.focus();
   }
@@ -894,32 +1216,21 @@
   }
 
   /**
-   * @param {Watch} CONFIG
+   * The in-page widget for one watch: its status, countdown, controls and alarm. The timing
+   * loop and the alarm's sound and notifications live outside it.
+   * @param {Watch} watch
    * @returns {Runner}
    */
-  function runWatch(CONFIG) {
+  function showWidget(watch) {
     const originalTitle = document.title;
     /** @type {string | null} */
     let ownTitle = null;
-    const away = currentUrl() !== CONFIG.url;
-    const watchedSite = !away || CONFIG.pendingAlert?.watchOrigin === location.origin;
-    let running = false;
-    /** @type {ReturnType<typeof setInterval> | undefined} */
-    let timer = undefined;
-    let startedAt = 0;
-    /** @type {number | null} */
-    let candidateSince = null;
-    /** @type {ReturnType<typeof setInterval> | undefined} */
-    let alarmTimer = undefined;
-    /** @type {ReturnType<typeof setInterval> | undefined} */
-    let notificationTimer = undefined;
-    /** @type {{ notification: Notification; listeners: AbortController } | null} */
-    let nativeNotification = null;
-    let notificationGeneration = 0;
-    let nativeFailed = false;
-    let alarmActive = false;
-    /** @type {AudioContext | null} */
-    let audio = null;
+    const away = currentUrl() !== watch.url;
+    const watchedSite = !away || watch.pendingAlert?.watchOrigin === location.origin;
+    /** @type {'alarm' | 'test' | null} */
+    let showing = null;
+    /** @type {VMScriptGMNotificationControl | undefined} */
+    let testNotification = undefined;
 
     // Shadow DOM keeps our notification text out of the watched page text.
     const host = document.createElement('div');
@@ -927,23 +1238,19 @@
     host.style.cssText =
       'position:fixed;right:12px;bottom:12px;z-index:2147483647;max-width:360px;';
     const root = host.attachShadow({ mode: SHADOW_MODE });
+    adoptStyles(root, WIDGET_CSS);
     const box = document.createElement('section');
-    box.style.cssText =
-      'background:#17202a;color:#fff;border:2px solid #7f8c8d;border-radius:10px;padding:14px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 3px 18px #0006;';
+    box.className = 'box';
     const status = document.createElement('div');
     status.setAttribute('role', 'status');
     const notice = document.createElement('div');
+    notice.className = 'notice';
     notice.setAttribute('role', 'alert');
-    notice.style.cssText = 'margin-top:6px;white-space:pre-wrap;';
-    const detailStyle = 'font-size:12px;color:#d1d5db;margin-top:6px;';
-    const soundStatus = document.createElement('div');
-    soundStatus.style.cssText = detailStyle;
-    soundStatus.setAttribute('aria-live', 'polite');
-    const deliveryStatus = document.createElement('div');
-    deliveryStatus.style.cssText = detailStyle;
-    deliveryStatus.setAttribute('aria-live', 'polite');
+    const detail = document.createElement('div');
+    detail.className = 'detail';
+    detail.setAttribute('aria-live', 'polite');
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;';
+    actions.className = 'actions';
     /**
      * @param {string} label
      * @param {() => void} action
@@ -952,40 +1259,71 @@
       const element = document.createElement('button');
       element.textContent = label;
       element.type = 'button';
-      element.style.cssText =
-        'font:inherit;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;padding:5px 9px;cursor:pointer;';
-      element.addEventListener('click', action);
+      onUserEvent(element, 'click', action);
       actions.append(element);
       return element;
     }
-    const toggle = button('Enable', () => (running ? pause('Paused') : start(true)));
+    const toggle = button('Enable', () => (watcher.running ? watcher.pause() : start(true)));
+    /** @type {HTMLButtonElement | null} */
+    let testButton = null;
     if (away) {
       toggle.hidden = true;
-      button('Open watched page', () => location.assign(CONFIG.url));
+      button('Open watched page', () => location.assign(watch.url));
     } else {
       button('Settings', openManager);
-      button('Test alert', () => alertUser(!CONFIG.pendingAlert));
+      testButton = button('Test alert', showTest);
     }
-    const acknowledgeButton = button('Acknowledge', acknowledgeAlert);
+    const acknowledgeButton = button('Acknowledge', acknowledge);
     acknowledgeButton.hidden = true;
-    box.append(status, notice, soundStatus, deliveryStatus, actions);
+    box.append(status, notice, detail, actions);
     root.append(box);
     document.documentElement.append(host);
 
-    /**
-     * @param {Partial<Watch>} patch
-     * @returns {boolean} Whether the change reached storage.
-     */
-    function persist(patch) {
-      Object.assign(CONFIG, patch);
-      try {
-        return updateWatch(CONFIG.url, patch);
-      } catch {
+    const watcher = createWatcher(watch, {
+      onStarted() {
+        toggle.textContent = 'Disable';
+        status.textContent = 'Starting watch…';
+      },
+      onProgress({ phase, secondsLeft, found }) {
+        if (phase === 'settling') {
+          status.textContent = 'Watching: waiting for the page to settle…';
+          watchedTitle('wait ' + secondsLeft + 's');
+        } else if (phase === 'confirming') {
+          status.textContent = 'Confirming condition: ' + secondsLeft + 's…';
+          watchedTitle('confirm ' + secondsLeft + 's');
+        } else {
+          status.textContent =
+            'Watching: target ' +
+            (found ? 'found' : 'not found') +
+            '. Reload in ' +
+            secondsLeft +
+            's.';
+          watchedTitle(phase === 'reloading' ? 'reloading' : secondsLeft + 's');
+        }
+      },
+      onStopped(reason, problem) {
+        toggle.textContent = 'Enable';
+        if (!showing) restoreTitle();
         status.textContent =
-          'Paused: browser storage is unavailable; cannot safely retain stop state.';
-        return false;
-      }
-    }
+          reason === 'user'
+            ? 'Paused'
+            : reason === 'not-ready'
+              ? 'Paused: page is not ready. Check login/loading, then Enable.'
+              : reason === 'invalid'
+                ? 'Paused: invalid configuration — ' + problem
+                : reason === 'storage'
+                  ? 'Paused: browser storage is unavailable; cannot safely retain stop state.'
+                  : 'Paused: configuration/page error — ' + problem;
+      },
+      onTriggered(persisted) {
+        toggle.textContent = 'Enable';
+        status.textContent = 'Stopped: condition met. Enable to watch again.';
+        raisedHere = watch.pendingAlert?.at ?? null;
+        showAlarm();
+        if (!persisted)
+          notice.textContent += '\nThe alarm could not be saved; avoid reloading this page.';
+      },
+    });
 
     /** @param {string} title */
     function setTitle(title) {
@@ -999,353 +1337,157 @@
       ownTitle = null;
     }
 
-    function stopTimers() {
-      running = false;
-      clearInterval(timer);
-      timer = undefined;
-      candidateSince = null;
-      toggle.textContent = 'Enable';
-      if (!alarmActive) restoreTitle();
-    }
-
     /** @param {string} countdown */
     function watchedTitle(countdown) {
-      if (!alarmActive) setTitle('👁 WATCHING [' + countdown + '] — ' + originalTitle);
+      if (!showing) setTitle('👁 WATCHING [' + countdown + '] — ' + originalTitle);
     }
 
     /** What the alarm says. Another site only learns the watched host, never the full URL. */
     function alarmText() {
-      if (CONFIG.pendingAlert?.kind !== 'redirect') return CONFIG.notificationText;
-      return watchedSite
-        ? 'Reloading ' + CONFIG.url + ' ended on a different page. You may need to sign in again.'
-        : 'Reloading a page on ' +
-            (CONFIG.pendingAlert.watchHost || 'another site') +
-            ' ended on this site instead. You may need to sign in again.';
+      const watchHost = watch.pendingAlert?.watchHost || 'another site';
+      if (watch.pendingAlert?.kind === 'redirect')
+        return watchedSite
+          ? 'Reloading ' + watch.url + ' ended on a different page. You may need to sign in again.'
+          : 'Reloading a page on ' +
+              watchHost +
+              ' ended on this site instead. You may need to sign in again.';
+      return (
+        'What you’re watching for ' +
+        (watch.condition === 'disappears' ? 'disappeared' : 'appeared') +
+        ' on ' +
+        (watchedSite ? watch.url : 'a page on ' + watchHost) +
+        '.'
+      );
     }
 
-    /** Names the watch in a desktop notification tag without the full URL on another site. */
-    function notificationTag() {
-      return 'reload-until-' + (watchedSite ? CONFIG.url : CONFIG.pendingAlert?.watchHost);
+    /** @returns {AlarmMessage} What a desktop notification for this alarm says. */
+    function alarmMessage() {
+      return {
+        title:
+          watch.pendingAlert?.kind === 'redirect'
+            ? 'Reload Until: a reload ended on another page'
+            : 'Reload Until: the page changed',
+        text:
+          alarmText() +
+          ' The alarm stays on the page until you click Acknowledge.' +
+          (watch.alertStyle === 'insistent'
+            ? ' This reminder repeats every minute until then.'
+            : ''),
+      };
     }
 
     function stoppedStatus() {
-      return CONFIG.pendingAlert?.kind === 'redirect'
+      return watch.pendingAlert?.kind === 'redirect'
         ? 'Stopped: a reload ended on a different page.'
         : 'Stopped: condition met.';
     }
 
-    /** @param {string} message */
-    function pause(message) {
-      stopTimers();
-      silence();
-      status.textContent = message;
-      persist({ enabled: false });
-    }
-
-    function tick() {
-      if (!running) return;
-      try {
-        if (currentUrl() !== CONFIG.url) {
-          followNavigation();
-          return;
-        }
-        const now = performance.now();
-        const elapsed = now - startedAt;
-        if (elapsed < CONFIG.settleSeconds * 1000) {
-          status.textContent = 'Watching: waiting for the page to settle…';
-          watchedTitle('wait ' + Math.ceil((CONFIG.settleSeconds * 1000 - elapsed) / 1000) + 's');
-          return;
-        }
-        if (CONFIG.readySelector && !document.querySelector(CONFIG.readySelector)) {
-          pause('Paused: page is not ready. Check login/loading, then Enable.');
-          return;
-        }
-        const { found, satisfied } = evaluateCondition(CONFIG);
-        if (satisfied) {
-          candidateSince ??= now;
-          const remaining = CONFIG.confirmSeconds * 1000 - (now - candidateSince);
-          status.textContent =
-            'Confirming condition: ' + Math.max(0, Math.ceil(remaining / 1000)) + 's…';
-          watchedTitle('confirm ' + Math.max(0, Math.ceil(remaining / 1000)) + 's');
-          if (remaining <= 0) {
-            stopTimers(); // Stop first, even if notifications fail.
-            status.textContent = 'Stopped: condition met. Enable to watch again.';
-            const persisted = persist({
-              enabled: false,
-              pendingAlert: CONFIG.requireExplicitDismissal
-                ? {
-                    kind: 'condition',
-                    at: Date.now(),
-                    landedUrl: CONFIG.url,
-                    watchOrigin: location.origin,
-                    watchHost: location.hostname,
-                  }
-                : null,
-            });
-            alertUser(false);
-            if (!persisted)
-              notice.textContent += '\nStop state could not be saved; avoid manually reloading.';
-          }
-          return; // Never reload in the middle of confirming a possible match.
-        }
-        candidateSince = null;
-        const remaining = CONFIG.intervalSeconds * 1000 - elapsed;
-        status.textContent =
-          'Watching: target ' +
-          (found ? 'found' : 'not found') +
-          '. Reload in ' +
-          Math.max(0, Math.ceil(remaining / 1000)) +
-          's.';
-        watchedTitle(Math.max(0, Math.ceil(remaining / 1000)) + 's');
-        if (remaining <= 0) {
-          stopTimers();
-          watchedTitle('reloading');
-          writeHandoff(CONFIG.url);
-          location.reload();
-        }
-      } catch (error) {
-        pause('Paused: configuration/page error — ' + /** @type {Error} */ (error).message);
-      }
-    }
-
-    /** @param {boolean} byUser Whether the user turned the watch on, as opposed to a page load. */
-    function start(byUser) {
-      if (currentUrl() !== CONFIG.url) {
-        status.textContent = 'Stopped: return to the watched URL before enabling this watch.';
-        return;
-      }
-      if (CONFIG.pendingAlert) {
-        status.textContent = 'Stopped: Acknowledge the pending alert before enabling this watch.';
-        return;
-      }
-      stopTimers();
-      silence();
-      try {
-        validateWatch(CONFIG);
-      } catch (error) {
-        pause('Paused: invalid configuration — ' + /** @type {Error} */ (error).message);
-        return;
-      }
-      if (byUser && !persist({ enabled: true })) return;
-      running = true;
-      toggle.textContent = 'Disable';
-      startedAt = performance.now();
-      candidateSince = null;
-      status.textContent = 'Starting watch…';
-      timer = setInterval(tick, 250);
-      tick();
-    }
-
-    function beep() {
-      if (!CONFIG.sound || !alarmActive) return;
-      try {
-        const AudioContext = /** @type {typeof window.AudioContext} */ (
-          window.AudioContext || /** @type {LegacyAudioWindow} */ (window).webkitAudioContext
-        );
-        audio ??= new AudioContext();
-        if (audio.state !== 'running') {
-          audio.resume().catch(() => {});
-          soundStatus.textContent = 'Sound may be blocked: allow audio autoplay for this site.';
-          return;
-        }
-        soundStatus.textContent = '';
-        const oscillator = audio.createOscillator();
-        const gain = audio.createGain();
-        oscillator.connect(gain);
-        gain.connect(audio.destination);
-        const now = audio.currentTime;
-        oscillator.frequency.setValueAtTime(880, now);
-        oscillator.frequency.setValueAtTime(660, now + 0.2);
-        gain.gain.setValueAtTime(0, now);
-        gain.gain.linearRampToValueAtTime(CONFIG.volume, now + 0.02);
-        gain.gain.setValueAtTime(CONFIG.volume, now + 0.4);
-        gain.gain.linearRampToValueAtTime(0, now + 0.5);
-        oscillator.addEventListener('ended', () => {
-          oscillator.disconnect();
-          gain.disconnect();
-        });
-        oscillator.start(now);
-        oscillator.stop(now + 0.5);
-      } catch (error) {
-        soundStatus.textContent = 'Sound unavailable: ' + /** @type {Error} */ (error).message;
-      }
-    }
-
-    let alarmMessage = '';
-    /** @param {boolean} test */
-    function alertUser(test) {
-      silence();
-      alarmActive = true;
-      const persistent = Boolean(CONFIG.pendingAlert) || CONFIG.requireExplicitDismissal;
-      if (!test && CONFIG.pendingAlert) rememberAlarm(CONFIG.url, CONFIG.pendingAlert.watchOrigin);
-      const title = test
-        ? 'Reload Until — TEST'
-        : CONFIG.pendingAlert?.kind === 'redirect'
-          ? 'Reload Until — reload ended on another page'
-          : CONFIG.notificationTitle;
-      alarmMessage = test ? 'Test alert — monitoring state is unchanged.' : alarmText();
-      notice.textContent =
-        '⚠ ' + alarmMessage + (persistent ? '\nClick Acknowledge to dismiss this alert.' : '');
+    /** @param {string} text */
+    function showNotice(text) {
+      notice.textContent = text;
       acknowledgeButton.hidden = false;
-      box.style.borderColor = '#ff5252';
-      setTitle(
-        '⚠ ' + (persistent ? 'ACKNOWLEDGE' : test ? 'TEST' : 'CHECK PAGE') + ' — ' + originalTitle,
-      );
-      nativeFailed = false;
-      function notifyDesktop() {
-        if (!alarmActive || !CONFIG.desktopNotification) return;
-        const generation = ++notificationGeneration;
-        const text = alarmMessage + (persistent ? ' — Open the page and click Acknowledge.' : '');
-        const tag = notificationTag();
-        const click = () => {
-          if (!alarmActive || generation !== notificationGeneration) return;
-          window.focus();
-          // Native close events may be timeouts or replacements: never acknowledge them.
-          if (!persistent) acknowledgeAlert();
-        };
-        /** @param {string} reason */
-        function fallback(reason) {
-          if (!alarmActive || generation !== notificationGeneration) return;
-          deliveryStatus.textContent = reason + ' Using your userscript manager’s notification.';
-          try {
-            /** @type {VMScriptGMNotificationOptions & { highlight: boolean; timeout: number }} */
-            const options = {
-              title,
-              text,
-              tag,
-              highlight: true,
-              silent: false,
-              timeout: persistent ? 0 : 10000,
-              onclick: click,
-            };
-            GM_notification(options);
-          } catch (error) {
-            deliveryStatus.textContent =
-              'Desktop delivery failed: ' +
-              /** @type {Error} */ (error).message +
-              '. The page alert remains active.';
-          }
-        }
-        if (CONFIG.notificationBackend === 'manager') {
-          fallback('');
-          return;
-        }
-        const Native = nativeAPI();
-        if (!Native || nativePermission() !== 'granted' || nativeFailed) {
-          fallback(
-            nativeFailed
-              ? 'Native delivery failed.'
-              : 'Native notifications are not available or allowed.',
-          );
-          return;
-        }
-        try {
-          closeNativeNotification();
-          /** @type {NotificationOptions & { renotify: boolean }} */
-          const options = {
-            body: text,
-            tag,
-            requireInteraction: persistent,
-            renotify: persistent,
-            silent: false,
-          };
-          const notification = new Native(title, options);
-          const listeners = new AbortController();
-          nativeNotification = { notification, listeners };
-          notification.addEventListener('click', click, { signal: listeners.signal });
-          notification.addEventListener(
-            'error',
-            () => {
-              if (!alarmActive || generation !== notificationGeneration || nativeFailed) return;
-              nativeFailed = true;
-              closeNativeNotification();
-              fallback('Native delivery failed.');
-            },
-            { signal: listeners.signal },
-          );
-          deliveryStatus.textContent =
-            persistent && notification.requireInteraction !== true
-              ? 'Native notification sent; browser did not confirm persistence. Repeating reminders remain active.'
-              : 'Native notification sent' +
-                (persistent
-                  ? ' with persistence requested. Repeating reminders remain active.'
-                  : '.');
-        } catch {
-          nativeFailed = true;
-          closeNativeNotification();
-          fallback('Native delivery failed.');
-        }
-      }
-
-      notifyDesktop();
-      if (persistent && CONFIG.desktopNotification) {
-        notificationTimer = setInterval(notifyDesktop, CONFIG.notificationRepeatSeconds * 1000);
-      }
-      beep();
-      if (CONFIG.sound) alarmTimer = setInterval(beep, CONFIG.soundRepeatSeconds * 1000);
+      if (testButton) testButton.hidden = true;
+      box.classList.add('alarm');
     }
 
-    function acknowledgeAlert() {
-      if (CONFIG.pendingAlert) {
+    function clearNotice() {
+      showing = null;
+      notice.textContent = '';
+      detail.textContent = '';
+      acknowledgeButton.hidden = true;
+      if (testButton) testButton.hidden = false;
+      box.classList.remove('alarm');
+      restoreTitle();
+    }
+
+    function showAlarm() {
+      const alert = watch.pendingAlert;
+      if (!alert) return;
+      removeNotification(testNotification);
+      testNotification = undefined;
+      showing = 'alarm';
+      rememberAlarm(watch.url, alert.watchOrigin);
+      showNotice('⚠ ' + alarmText() + '\nClick Acknowledge to dismiss this alarm.');
+      setTitle('⚠ ACKNOWLEDGE — ' + originalTitle);
+      soundAlarm(watch, alarmMessage(), (problem) => {
+        detail.textContent = problem;
+      });
+    }
+
+    /** Shows what this watch's alarm looks like, without touching the watch. */
+    function showTest() {
+      if (showing) return;
+      showing = 'test';
+      showNotice(
+        '⚠ Test alert: this is how an alarm shows on this page. Your watch is unchanged.\nClick Acknowledge to dismiss it.',
+      );
+      setTitle('⚠ TEST — ' + originalTitle);
+      const problems = [];
+      if (watch.alertStyle !== 'page') {
+        const sent = notifyDesktop(
+          'Reload Until: test alert',
+          'This is how an alarm for this watch reaches your desktop. Your watch is unchanged.',
+        );
+        testNotification = sent.handle;
+        problems.push(sent.problem);
+      }
+      if (watch.alertStyle === 'insistent') problems.push(beep());
+      detail.textContent = problems.filter(Boolean).join(' ');
+    }
+
+    function acknowledge() {
+      if (showing === 'test') {
+        removeNotification(testNotification);
+        testNotification = undefined;
+        clearNotice();
+        return;
+      }
+      if (watch.pendingAlert) {
         const stopped = stoppedStatus();
         try {
-          updateWatch(CONFIG.url, { pendingAlert: null });
-          CONFIG.pendingAlert = null;
+          updateWatch(watch.url, { pendingAlert: null });
+          watch.pendingAlert = null;
         } catch (error) {
           notice.textContent +=
             '\nCould not save acknowledgement; try again: ' + /** @type {Error} */ (error).message;
           return;
         }
-        forgetAlarm(CONFIG.url);
+        forgetAlarm(watch.url);
         status.textContent = stopped + ' Enable to watch again.';
       }
-      silence();
+      silenceAlarm();
+      clearNotice();
       if (away) boot();
     }
 
-    function closeNativeNotification() {
-      if (!nativeNotification) return;
-      const { notification, listeners } = nativeNotification;
-      nativeNotification = null;
-      try {
-        listeners.abort();
-        notification.close();
-      } catch {
-        /* A closed or unavailable native notification needs no cleanup. */
+    /** @param {boolean} byUser Whether the user turned the watch on, as opposed to a page load. */
+    function start(byUser) {
+      if (currentUrl() !== watch.url) {
+        status.textContent = 'Stopped: return to the watched URL before enabling this watch.';
+        return;
       }
+      if (watch.pendingAlert) {
+        status.textContent = 'Stopped: Acknowledge the pending alert before enabling this watch.';
+        return;
+      }
+      watcher.start(byUser);
     }
 
-    function silence() {
-      alarmActive = false;
-      notificationGeneration++;
-      closeNativeNotification();
-      deliveryStatus.textContent = '';
-      soundStatus.textContent = '';
-      clearInterval(alarmTimer);
-      alarmTimer = undefined;
-      clearInterval(notificationTimer);
-      notificationTimer = undefined;
-      if (audio && audio.state === 'running') audio.suspend().catch(() => {});
-      notice.textContent = '';
-      acknowledgeButton.hidden = true;
-      box.style.borderColor = '#7f8c8d';
-      restoreTitle();
-    }
-
-    if (CONFIG.pendingAlert) {
+    if (watch.pendingAlert) {
       status.textContent = stoppedStatus() + ' An alert is waiting for you to acknowledge it.';
-      alertUser(false);
-    } else if (CONFIG.enabled) start(false);
+      showAlarm();
+    } else if (watch.enabled) start(false);
     else status.textContent = 'Disabled. Enable to start watching.';
     return {
       suspendRefresh() {
-        stopTimers();
+        watcher.stop();
+        toggle.textContent = 'Enable';
         watchedTitle('settings open');
       },
       destroy() {
-        stopTimers();
-        silence();
-        if (audio) audio.close().catch(() => {});
+        watcher.stop();
+        removeNotification(testNotification);
+        restoreTitle();
         host.remove();
       },
     };

@@ -59,15 +59,26 @@ async function openPanel(vm, page) {
 }
 
 /**
- * @param {Locator} panel
- * @param {{ condition: 'Appears' | 'Disappears', selector: string, interval?: number }} watch
+ * @typedef {object} WatchFields
+ * @property {'Appears' | 'Disappears'} condition
+ * @property {string} selector
+ * @property {number} [interval]
+ * @property {'page' | 'page-and-desktop' | 'insistent'} [alertStyle]
  */
-async function fillWatch(panel, { condition, selector, interval = 10 }) {
+
+/**
+ * @param {Locator} panel
+ * @param {WatchFields} watch
+ */
+async function fillWatch(panel, { condition, selector, interval = 10, alertStyle }) {
   await panel.getByLabel('Enabled', { exact: false }).check();
   await panel.getByLabel('Refresh interval (seconds)').fill(String(interval));
   await panel.getByLabel('Stop and notify when the target').selectOption({ label: condition });
   await panel.getByLabel('CSS selector', { exact: true }).fill(selector);
-  await panel.getByText('Timing, safeguards and notification settings').click();
+  if (alertStyle) {
+    await panel.getByLabel('Alert style').selectOption(alertStyle);
+  }
+  await panel.getByText('Timing and safeguards').click();
   await panel.getByLabel('Initial rendering wait (seconds)').fill('1');
   await panel.getByLabel('Condition confirmation time (seconds)').fill('0');
 }
@@ -76,7 +87,7 @@ async function fillWatch(panel, { condition, selector, interval = 10 }) {
  * Creates a watch for the page through the settings panel.
  * @param {Vm} vm
  * @param {Page} page
- * @param {{ condition: 'Appears' | 'Disappears', selector: string }} watch
+ * @param {WatchFields} watch
  */
 async function createWatch(vm, page, watch) {
   const panel = await openPanel(vm, page);
@@ -144,6 +155,41 @@ async function countValueWrites(vm) {
     });
   });
   return () => worker.evaluate(() => globalThis.reloadUntilWrites.count);
+}
+
+/**
+ * Lists the desktop notifications Violentmonkey is showing. Its `GM_notification` is built on
+ * `chrome.notifications`, so the extension's own list is what the desktop was given.
+ * @param {Vm} vm
+ * @returns {Promise<string[]>} Notification ids.
+ */
+async function desktopNotifications(vm) {
+  const [worker] = vm.context.serviceWorkers();
+  return Object.keys(await worker.evaluate(() => chrome.notifications.getAll()));
+}
+
+/**
+ * Starts counting the desktop notifications Violentmonkey creates. Calling it again restarts
+ * the count.
+ * @param {Vm} vm
+ * @returns {Promise<() => Promise<number>>} Reads the number created since the call.
+ */
+async function countNotificationsSent(vm) {
+  const [worker] = vm.context.serviceWorkers();
+  await worker.evaluate(() => {
+    if (globalThis.reloadUntilNotifications) {
+      globalThis.reloadUntilNotifications.count = 0;
+      return;
+    }
+    const counter = { count: 0 };
+    globalThis.reloadUntilNotifications = counter;
+    const create = chrome.notifications.create.bind(chrome.notifications);
+    chrome.notifications.create = (...args) => {
+      counter.count += 1;
+      return create(...args);
+    };
+  });
+  return () => worker.evaluate(() => globalThis.reloadUntilNotifications.count);
 }
 
 /**
@@ -509,5 +555,209 @@ test('a pending alarm stays with the tab when it moves to another page of the si
     await page.reload();
     await page.waitForTimeout(2000);
     await expect(widget(page)).toHaveCount(0);
+  });
+});
+
+test('page JavaScript cannot read watches', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/appear?private`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await vm.install(source);
+    // The script runs in the page's own JavaScript world, so a page that wraps attachShadow
+    // before the script runs receives even a closed shadow root.
+    await page.addInitScript(() => {
+      /** @type {ShadowRoot[]} */
+      const roots = [];
+      Object.assign(window, { capturedRoots: roots });
+      const attach = Element.prototype.attachShadow;
+      Element.prototype.attachShadow = function (init) {
+        const root = attach.call(this, init);
+        roots.push(root);
+        return root;
+      };
+    });
+    await page.reload();
+    await expect.poll(() => countdown(page), { timeout: 15_000 }).not.toBeNull();
+    expect(
+      await page.evaluate(() => document.querySelector('#reload-until')?.shadowRoot === null),
+    ).toBe(true);
+    const capturedRoots = () => page.evaluate(() => window.capturedRoots.length);
+    expect(await capturedRoots()).toBe(1);
+
+    /** @param {string} label */
+    const clickFromPage = (label) =>
+      page.evaluate((text) => {
+        for (const button of window.capturedRoots[0].querySelectorAll('button')) {
+          if (button.textContent === text) {
+            button.click();
+          }
+        }
+      }, label);
+
+    await page.evaluate(() =>
+      document
+        .querySelector('#reload-until')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true })),
+    );
+    await clickFromPage('Settings');
+    await page.waitForTimeout(1000);
+    expect(await capturedRoots(), 'a settings panel was opened').toBe(1);
+    expect(await countdown(page), 'refreshing was suspended').not.toBeNull();
+
+    await clickFromPage('Disable');
+    await page.waitForTimeout(1000);
+    await expect(page).toHaveTitle(WATCHING);
+    const watch = /** @type {{ enabled?: boolean }} */ (
+      (await storedValues(vm))[`watch:${watched}`]
+    );
+    expect(watch.enabled).toBe(true);
+  });
+});
+
+test("panel lists only this site's watches", async () => {
+  await withScript(async ({ vm, site }) => {
+    const other = await vm.context.newPage();
+    const otherWatched = `http://other.test:${site.port}/appear?other`;
+    await other.goto(otherWatched);
+    await createWatch(vm, other, { condition: 'Appears', selector: '#never-there' });
+    await expect(other).toHaveTitle(WATCHING);
+
+    const page = await vm.context.newPage();
+    const mine = `${site.origin}/appear?mine`;
+    await page.goto(mine);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect
+      .poll(async () => Object.keys(await storedValues(vm)))
+      .toEqual(expect.arrayContaining([`watch:${mine}`, `watch:${otherWatched}`]));
+
+    const panel = await openPanel(vm, page);
+    const options = await panel.getByLabel('Saved watches').locator('option').allTextContents();
+    expect(options.some((text) => text.includes(mine))).toBe(true);
+    expect(options.filter((text) => text.includes('other.test'))).toEqual([]);
+    const everything = await page.evaluate(() =>
+      [
+        document.documentElement.outerHTML,
+        ...Array.from(document.querySelectorAll('*'), (element) => element.shadowRoot?.innerHTML),
+      ].join('\n'),
+    );
+    expect(everything).toContain('/appear?mine');
+    expect(everything).not.toContain('other.test');
+
+    await panel.getByLabel('Saved watches').selectOption({ label: '＋ New watch for this page' });
+    const url = panel.getByLabel('Page URL');
+    await url.fill(`http://other.test:${site.port}/plain`);
+    await panel.getByLabel('CSS selector', { exact: true }).fill('#target');
+    await panel.getByRole('button', { name: 'Save watch' }).click();
+    await expect(url).toHaveAttribute('aria-invalid', 'true');
+    await expect(url).toHaveAccessibleErrorMessage(/this site/);
+  });
+});
+
+test('panel is styled on a strict-CSP page', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/csp`);
+    const panel = await openPanel(vm, page);
+    expect(await panel.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe(
+      'rgba(0, 0, 0, 0)',
+    );
+    await fillWatch(panel, { condition: 'Appears', selector: '#never-there' });
+    await panel.getByRole('button', { name: 'Save watch' }).click();
+    await expect(panel).toBeHidden();
+    const box = widget(page).locator('section');
+    await expect(box).toBeVisible();
+    expect(await box.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe(
+      'rgba(0, 0, 0, 0)',
+    );
+  });
+});
+
+test('Test alert does not re-fire a pending alarm', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#target' });
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+    await expect.poll(() => desktopNotifications(vm)).toHaveLength(1);
+    const before = await desktopNotifications(vm);
+    const sent = await countNotificationsSent(vm);
+
+    await expect(widget(page).getByRole('button', { name: 'Test alert' })).toBeHidden();
+    await page.waitForTimeout(2000);
+    expect(await sent()).toBe(0);
+    expect(await desktopNotifications(vm)).toEqual(before);
+    await expect(page).toHaveTitle(ALARM);
+  });
+});
+
+test('Acknowledge closes the desktop notification', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#target' });
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+    await expect.poll(() => desktopNotifications(vm)).toHaveLength(1);
+
+    await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
+    await expect.poll(() => desktopNotifications(vm)).toEqual([]);
+  });
+});
+
+test('a re-shown alarm sends no second notification', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#target' });
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+    await expect.poll(() => desktopNotifications(vm)).toHaveLength(1);
+    const sent = await countNotificationsSent(vm);
+
+    const panel = await openPanel(vm, page);
+    await panel.getByRole('button', { name: 'Close' }).click();
+    await expect(panel).toBeHidden();
+    await expect(widget(page).getByRole('alert')).toBeVisible();
+    await page.reload();
+    await expect(page).toHaveTitle(ALARM);
+    await expect(widget(page).getByRole('alert')).toBeVisible();
+    await page.waitForTimeout(2000);
+    expect(await sent()).toBe(0);
+  });
+});
+
+test('page alert style sends no desktop notification', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear`);
+    const sent = await countNotificationsSent(vm);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#target', alertStyle: 'page' });
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+    await expect(widget(page).getByRole('alert')).toBeVisible();
+    await page.waitForTimeout(2000);
+    expect(await sent()).toBe(0);
+  });
+});
+
+test('insistent alert style repeats the desktop notification until Acknowledge', async () => {
+  test.setTimeout(180_000);
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear`);
+    const sent = await countNotificationsSent(vm);
+    await createWatch(vm, page, {
+      condition: 'Appears',
+      selector: '#target',
+      alertStyle: 'insistent',
+    });
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+    await expect.poll(sent).toBe(1);
+
+    await expect.poll(sent, { timeout: 70_000, intervals: [1000] }).toBe(2);
+    expect(await desktopNotifications(vm)).toHaveLength(1);
+    await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
+    await expect.poll(() => desktopNotifications(vm)).toEqual([]);
   });
 });
