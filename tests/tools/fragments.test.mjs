@@ -66,7 +66,7 @@ describe('parseFragmentName', () => {
 
 describe('validateFragment', () => {
   it('accepts one sentence ending in ., ! or ?', () => {
-    for (const text of ['Works now.', 'Works now!', 'Does it work?', 'Works now.\n']) {
+    for (const text of ['Works now.', 'Works now!', 'Does it work?']) {
       assert.deepEqual(validateFragment(frag('x', 'fixed', text)), [], text);
     }
   });
@@ -74,6 +74,8 @@ describe('validateFragment', () => {
   it('rejects two lines', () => {
     assert.notDeepEqual(validateFragment(frag('x', 'fixed', 'One.\nTwo.')), []);
     assert.notDeepEqual(validateFragment(frag('x', 'fixed', 'One.\n\n')), []);
+    assert.notDeepEqual(validateFragment(frag('x', 'fixed', 'One.\n')), []);
+    assert.notDeepEqual(validateFragment(frag('x', 'fixed', 'One.\r')), []);
   });
 
   it('rejects a missing final punctuation mark', () => {
@@ -186,6 +188,27 @@ describe('readFragments', () => {
       assert.deepEqual(await readFragments(empty), []);
     } finally {
       await rm(empty, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a file ending in two newlines as invalid', async () => {
+    await writeFile(join(dir, 'changelog.d', 'extra.fixed.md'), 'Fixes a.\n\n');
+    try {
+      const fragment = (await readFragments(dir)).find((f) => f.name === 'extra');
+      assert.notDeepEqual(validateFragment(fragment), []);
+    } finally {
+      await rm(join(dir, 'changelog.d', 'extra.fixed.md'));
+    }
+  });
+
+  it('strips one CRLF terminator and validates clean', async () => {
+    await writeFile(join(dir, 'changelog.d', 'crlf.fixed.md'), 'Fixes a.\r\n');
+    try {
+      const fragment = (await readFragments(dir)).find((f) => f.name === 'crlf');
+      assert.equal(fragment.text, 'Fixes a.');
+      assert.deepEqual(validateFragment(fragment), []);
+    } finally {
+      await rm(join(dir, 'changelog.d', 'crlf.fixed.md'));
     }
   });
 

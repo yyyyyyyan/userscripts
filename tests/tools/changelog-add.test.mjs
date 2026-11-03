@@ -53,6 +53,8 @@ describe('changelog-add', () => {
       [slug, 'nonsense', 'x', 'Adds x.'],
       [slug, 'added', 'Bad_Name', 'Adds x.'],
       ['nope', 'added', 'x', 'Adds x.'],
+      [slug, 'added', 'trailing-newline', 'Adds x.\n'],
+      [slug, 'added', 'two-lines', 'Adds x.\nAdds y.'],
     ];
     for (const args of cases) {
       const result = run(...args);

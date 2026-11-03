@@ -72,7 +72,8 @@ export async function readFragments(scriptDir) {
 }
 
 /**
- * Checks one fragment against the fragment rules.
+ * Checks one fragment against the fragment rules. `text` is the body without
+ * the file's single terminating newline, so any line break left in it fails.
  * @param {{ name: string, section: string, text: string }} fragment
  * @returns {string[]} Problems found; an empty array means the fragment is valid.
  */
@@ -84,8 +85,8 @@ export function validateFragment(fragment) {
   if (!SECTIONS.includes(fragment.section)) {
     problems.push(`section "${fragment.section}" must be one of: ${SECTIONS.join(', ')}`);
   }
-  const text = fragment.text.replace(/\r?\n$/, '');
-  if (text.includes('\n')) {
+  const { text } = fragment;
+  if (/[\r\n]/.test(text)) {
     problems.push('must be exactly one line');
   } else if (text.trim() === '') {
     problems.push('must not be empty');
