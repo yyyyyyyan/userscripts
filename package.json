@@ -4,7 +4,7 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/tools/",
+    "test": "node --test \"tests/tools/*.test.mjs\"",
     "pree2e": "node tools/fetch-violentmonkey.mjs",
     "e2e": "playwright test",
     "typecheck": "tsc -p jsconfig.json",
