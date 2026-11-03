@@ -320,6 +320,31 @@ test('disappears: alarm after the element goes away', async () => {
   });
 });
 
+test("hidden and script text don't count", async () => {
+  await withScript(async ({ vm, site }) => {
+    for (const { query, selector, text } of [
+      { query: 'text', selector: 'body', text: 'Sold out' },
+      { query: 'element', selector: '.status', text: '' },
+    ]) {
+      const page = await vm.context.newPage();
+      // The fixture hides the status and repeats its words in a script from the second request.
+      await page.goto(`${site.origin}/hidden?${query}`);
+      const panel = await openPanel(vm, page);
+      await fillWatch(panel, { condition: 'Disappears', selector });
+      await field(panel, 'Containing text (optional)').fill(text);
+      await field(panel, LABELS.ready).fill('h1');
+      await panel.getByRole('button', { name: 'Save watch' }).click();
+      await expect(panel).toBeHidden();
+
+      await expect(page, `the alarm for /hidden?${query}`).toHaveTitle(ALARM, {
+        timeout: 30_000,
+      });
+      expect(site.count(`/hidden?${query}`)).toBe(2);
+      await page.close();
+    }
+  });
+});
+
 test('alarm survives reload and clears only on Acknowledge', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();

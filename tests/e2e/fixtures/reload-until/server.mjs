@@ -84,6 +84,17 @@ export async function startFixtures() {
       setTimeout(() => html(res, page('Slow', '')), nth >= 2 ? SLOW_RELOAD_MS : 0),
     ),
     '/login': counted((res) => html(res, page('Sign in', '<form><input name="user"></form>'))),
+    '/hidden': counted((res, nth) =>
+      html(
+        res,
+        page(
+          'Hidden',
+          nth === 1
+            ? '<p class="status">Sold out</p>'
+            : '<p class="status" hidden>Sold out</p><script>const label = "Sold out";</script>',
+        ),
+      ),
+    ),
     '/plain': counted((res) => html(res, page('Plain', '<p>Nothing to watch here.</p>'))),
     '/csp': counted((res) =>
       html(res, page('Strict CSP', ''), { 'content-security-policy': "style-src 'self'" }),

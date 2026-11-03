@@ -118,7 +118,8 @@ it throws away changes you haven't saved, and Escape closes it.
 - **Element to look for**: the CSS selector you copied, or `body` for the whole
   page.
 - **Containing text (optional)**: the element counts only if its text contains
-  these words. Extra spaces and line breaks don't matter.
+  these words. Extra spaces and line breaks don't matter. Only text the page
+  shows counts: hidden parts of the page and its scripts are ignored.
 - **Match case**: treat capital and small letters in the text as different.
   It's off by default.
 - **Raise the alarm when the element**: **Appears** (the default) or

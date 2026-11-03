@@ -514,6 +514,24 @@
   }
 
   /**
+   * @param {Element} element
+   * @returns {boolean} Whether the page shows the element. Browsers without the check count it.
+   */
+  function isShown(element) {
+    return typeof element.checkVisibility !== 'function' || element.checkVisibility();
+  }
+
+  /**
+   * @param {Element} element
+   * @returns {string} The element's text as the page shows it, without hidden parts or scripts.
+   */
+  function shownText(element) {
+    return (element instanceof HTMLElement ? element.innerText : element.textContent) ?? '';
+  }
+
+  /**
+   * Looks for the watch's element among those the page shows. With text set, only text the page
+   * shows counts, so hidden parts of the page and its scripts never match.
    * @param {Watch} watch
    * @returns {{ found: boolean, satisfied: boolean }}
    */
@@ -521,7 +539,8 @@
     const needle = normalizeText(watch.text, watch.matchCase);
     const found = Array.from(document.querySelectorAll(watch.selector)).some(
       (element) =>
-        !needle || normalizeText(element.textContent || '', watch.matchCase).includes(needle),
+        isShown(element) &&
+        (!needle || normalizeText(shownText(element), watch.matchCase).includes(needle)),
     );
     return { found, satisfied: watch.condition === 'appears' ? found : !found };
   }
@@ -1257,7 +1276,7 @@
       'selector',
       'Element to look for',
       'text',
-      'Enter a CSS selector, such as #price or .sold-out, or enter “body” to check the whole page. To find one, right-click the element and select Inspect. In the developer tools, right-click the highlighted line, then select Copy > Copy selector in Chrome or Copy > CSS Selector in Firefox.',
+      'Enter a CSS selector, such as #price or .sold-out, or “body” for everything the page shows. To find one, right-click the element and select Inspect. In the developer tools, right-click the highlighted line, then select Copy > Copy selector in Chrome or Copy > CSS Selector in Firefox.',
       what,
     ).required = true;
     field(
