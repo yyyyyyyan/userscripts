@@ -237,6 +237,7 @@ test('the pin comes back after the page drops it, and status tells the truth', a
     await expect.poll(() => backgroundOf(page)).toBe(WHITE);
     const dropped = await readStatus(vm, page);
     expect(dropped).toContain(DROPPED);
+    expect(dropped).toContain("this page may show your browser's setting until you reload it");
     expect(dropped).not.toContain('The site has set its own');
 
     await page.evaluate(() => {
@@ -391,14 +392,45 @@ test('menu has four entries and marks the active one', async () => {
  */
 const sentences = (text) => text.trim().split(/(?<=[.!?])\s+/);
 
+const PAUSE_MARK = '<!-- the test server pauses here -->';
+
+/**
+ * Serves `html` in two parts, pausing after the pause mark, so the manager injects the
+ * script while the page is still loading. Without the pause, a small local page finishes
+ * loading before the manager's injection lands.
+ * @param {string} html
+ * @returns {(req: Request, res: Response) => void}
+ */
+function pausedAfterMark(html) {
+  const at = html.indexOf(PAUSE_MARK) + PAUSE_MARK.length;
+  if (at < PAUSE_MARK.length) throw new Error('fixture has no pause mark');
+  return (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.write(html.slice(0, at));
+    setTimeout(() => {
+      if (!res.destroyed) res.end(html.slice(at));
+    }, 300);
+  };
+}
+
+/**
+ * @param {Page} page
+ * @returns {Promise<string | undefined>} The scheme the page's own script read.
+ */
+const schemeReadByPage = (page) => page.evaluate(() => document.documentElement.dataset.scheme);
+
+const EARLY_WARNING = 'may have checked its theme before the script could run';
+
 test('status explains an early theme check in plain sentences', async () => {
-  await withSite(await fixture('early-check.html'), async ({ vm, open }) => {
+  const routes = { '/': pausedAfterMark(await fixture('early-check.html')) };
+  await withSites({ routes }, async ({ vm, open }) => {
     const page = await open('light');
     await choose(vm.context, vm.extensionId, page, 'Dark for');
+    expect(await schemeReadByPage(page)).toBe('light');
     const status = await readStatus(vm, page);
     expect(status.trimStart().startsWith('{')).toBe(false);
     expect(status).toContain('Dark is saved for 127.0.0.1.');
-    expect(status).toContain('checked its theme before');
+    expect(status).toContain(EARLY_WARNING);
     expect(sentences(status).length).toBeGreaterThanOrEqual(2);
     expect(sentences(status).length).toBeLessThanOrEqual(4);
   });
@@ -416,6 +448,54 @@ test('status says it applied on a normal page', async () => {
     expect(status).not.toContain('checked its theme before');
     expect(sentences(status).length).toBeGreaterThanOrEqual(2);
     expect(sentences(status).length).toBeLessThanOrEqual(4);
+  });
+});
+
+test('an unrelated script that ran first does not hide that the page asked later', async () => {
+  const routes = { '/': pausedAfterMark(await fixture('late-check.html')) };
+  await withSites({ routes }, async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    expect(await schemeReadByPage(page)).toBe('dark');
+    const status = await readStatus(vm, page);
+    expect(status).toContain(
+      'It applied: this page asked which theme you prefer and was told dark.',
+    );
+    expect(status).not.toContain(EARLY_WARNING);
+  });
+});
+
+test('a script still waiting to download does not count as having run', async () => {
+  const theme = await fixture('theme.js');
+  /** @param {Request} _req @param {Response} res */
+  const slowScript = (_req, res) => {
+    setTimeout(() => {
+      if (res.destroyed) return;
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+      res.end(theme);
+    }, 500);
+  };
+  const routes = { '/': await fixture('pending-script.html'), '/theme.js': slowScript };
+  await withSites({ routes }, async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    expect(await schemeReadByPage(page)).toBe('dark');
+    expect(await readStatus(vm, page)).toBe(
+      'Dark is saved for 127.0.0.1. It applied: this page asked which theme you prefer and was told dark.',
+    );
+  });
+});
+
+test('a host written with a trailing dot shares the choice of the same host', async () => {
+  const routes = { '/': await fixture('media-rule.html') };
+  await withSites({ routes, hosts: ['example.test', 'example.test.'] }, async ({ vm, open }) => {
+    const plain = await open('light', { host: 'example.test' });
+    await choose(vm.context, vm.extensionId, plain, 'Dark for');
+    await expect.poll(() => backgroundOf(plain)).toBe(BLACK);
+
+    const dotted = await open('light', { host: 'example.test.' });
+    await expect.poll(() => backgroundOf(dotted)).toBe(BLACK);
+    expect(await menuEntries(vm, dotted)).toContain(`\u2713 Dark for example.test ${RELOADS}`);
   });
 });
 
@@ -442,7 +522,13 @@ test('strict CSP page still applies or explains why', async () => {
         () => true,
         () => false,
       );
-    if (!applied) expect(await readStatus(vm, page)).toContain('Content Security Policy');
+    const status = await readStatus(vm, page);
+    if (applied) {
+      expect(await prefersDark(page)).toBe(true);
+      expect(status).not.toContain('could not run inside this page');
+    } else {
+      expect(status).toContain('Content Security Policy');
+    }
   });
 });
 

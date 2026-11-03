@@ -27,7 +27,7 @@
 
   const PREFIX = 'choice:';
   const LOG = '[Per-Site Light/Dark Mode]';
-  const host = location.hostname.toLowerCase();
+  const host = location.hostname.toLowerCase().replace(/\.$/, '');
   const key = `${PREFIX}${host}`;
 
   /**
@@ -38,9 +38,10 @@
    * @returns {{ host: string, mode: 'light' | 'dark' } | null}
    */
   function resolveChoice(hostname, getValue) {
-    const labels = hostname.split('.');
-    const isAddress = hostname.includes(':') || /^[\d.]+$/.test(hostname);
-    const candidates = isAddress ? [hostname] : labels.map((_, i) => labels.slice(i).join('.'));
+    const name = hostname.replace(/\.$/, '');
+    const labels = name.split('.');
+    const isAddress = name.includes(':') || /^[\d.]+$/.test(name);
+    const candidates = isAddress ? [name] : labels.map((_, i) => labels.slice(i).join('.'));
     for (const candidate of candidates) {
       const value = getValue(`${PREFIX}${candidate}`);
       if (value === 'light' || value === 'dark') return { host: candidate, mode: value };
@@ -57,18 +58,50 @@
   const nativeMatchMedia = /** @type {(query?: string) => MediaQueryList} */ (page.matchMedia);
   const isolated = typeof GM_info === 'object' && GM_info.injectInto === 'content';
 
+  /** @param {Node} node */
+  function hasFollowingNode(node) {
+    const root = document.documentElement;
+    for (
+      let current = /** @type {Node | null} */ (node);
+      current && current !== root;
+      current = current.parentNode
+    ) {
+      let next = current.nextSibling;
+      // Userscript managers attach their own elements to <html>, where the parser only ever
+      // puts <head>, <body> or <frameset>.
+      if (current.parentNode === root) {
+        while (
+          next?.nodeType === Node.ELEMENT_NODE &&
+          !['head', 'body', 'frameset'].includes(/** @type {Element} */ (next).localName)
+        )
+          next = next.nextSibling;
+      }
+      if (next) return true;
+    }
+    return false;
+  }
+
   /**
-   * Counts page scripts that ran before this one could. Any of them may already have read
-   * the real preference, and nothing afterwards can tell whether one did.
+   * Counts the page's scripts that have certainly run already. Any of them may have read the
+   * real preference, and nothing afterwards can tell whether one did.
+   * - Data blocks such as JSON are never counted.
+   * - Once the page has loaded, every script counts.
+   * - Before that, external `async`, `defer` and module scripts don't count, because they
+   *   may not have run yet.
+   * - While the page is still loading, an ordinary script counts only when something follows
+   *   it in the document. The parser moves past a script only after running it, so the last
+   *   one may still be waiting to download or for a style sheet.
    */
   function scriptsAlreadyRun() {
-    const parsed = document.readyState !== 'loading';
+    const state = document.readyState;
     return [...(document.scripts || [])].filter((element) => {
       const type = element.type.trim().toLowerCase();
       const classic =
         type === '' || /^(?:text|application)\/(?:x-)?(?:java|ecma)script$/.test(type);
       if (!classic && type !== 'module') return false;
-      return parsed || (classic && !element.async && !element.defer);
+      if (state === 'complete') return true;
+      if (!classic || (element.src && (element.async || element.defer))) return false;
+      return state === 'interactive' || hasFollowingNode(element);
     }).length;
   }
 
@@ -140,15 +173,18 @@
       lines.push(
         `The script could not answer this page's theme checks: ${status.javascriptError.replace(/[.\s]+$/, '')}.`,
       );
-    } else if (injectedAt.scripts > 0) {
-      lines.push(
-        status.mediaConditions > 0 || everPinned
-          ? "Its style sheets follow your choice, but this page may have checked its theme before the script could run, so parts of it may still show your browser's setting."
-          : "This page may have checked its theme before the script could run, so it may still show your browser's setting.",
-        "Reload the page, or set the site's own theme to System or Automatic.",
-      );
     } else if (status.mediaConditions > 0 || status.pageQueries > 0 || everPinned) {
       lines.push(`It applied: this page asked which theme you prefer and was told ${mode}.`);
+      if (injectedAt.scripts > 0) {
+        lines.push(
+          "If parts of this page still show your browser's setting, the page probably checked its theme before the script loaded; reload the page, or set the site's own theme to System or Automatic.",
+        );
+      }
+    } else if (injectedAt.scripts > 0) {
+      lines.push(
+        "This page may have checked its theme before the script could run, so it may still show your browser's setting.",
+        "Reload the page, or set the site's own theme to System or Automatic.",
+      );
     } else {
       lines.push(
         `This page has not asked which theme you prefer, so it may not have a ${mode} theme of its own.`,
@@ -162,7 +198,7 @@
       );
     } else if (pin === 'dropped') {
       lines.push(
-        'The page later removed the color scheme the script set, so form controls and scroll bars may not match until you reload the page.',
+        "The page later removed the color scheme the script set, so this page may show your browser's setting until you reload it.",
       );
     } else if (pin === 'failed') {
       lines.push(
