@@ -100,6 +100,8 @@
   const HANDOFF_CLAIM_DELAY_MS = 3000;
   const MAX_SECONDS = 86400;
   const REMINDER_INTERVAL_MS = 60_000;
+  /** A reminder due sooner than this after a page loads waits for the next one instead. */
+  const REMINDER_MIN_WAIT_MS = 10_000;
   const SOUND_VOLUME = 0.25;
   /** @type {readonly AlertStyle[]} */
   const ALERT_STYLES = ['page', 'page-and-desktop', 'insistent'];
@@ -143,6 +145,7 @@
     small{display:block;margin-top:2px;font-size:13px;color:#bfc8d2}
     .field-error{flex-basis:100%;margin:4px 0 0;color:#ffb4b4}
     button{font:inherit;padding:7px 12px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#111;cursor:pointer}
+    button:disabled{opacity:.55;cursor:default}
     .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
     .error{color:#ffb4b4;white-space:pre-wrap;margin-top:12px}
   `;
@@ -432,8 +435,8 @@
   }
 
   /**
-   * Applies a change to the freshest stored copy of one watch, so a tab never writes back
-   * fields it read before another tab changed them.
+   * Applies a change to one watch. It re-reads the watch just before writing, so only the
+   * patched fields change and fields another tab changed earlier are kept.
    * @param {string} url
    * @param {Partial<Watch>} patch
    * @returns {boolean} Whether the watch still existed.
@@ -878,7 +881,8 @@
   /**
    * Shows a desktop notification. Where the user allowed this site's notifications, it uses
    * them and asks the browser to keep them on screen until clicked; otherwise, or if they fail,
-   * it uses the userscript manager's. Clicking it brings this tab to the front.
+   * it uses the userscript manager's. Clicking it closes it and asks to bring this tab to the
+   * front.
    * @param {AlarmMessage} message
    * @param {{ renotify: boolean, onProblem: (problem: string) => void }} options
    * @returns {DesktopNotice}
@@ -902,13 +906,17 @@
       detach();
       fallback ??= notifyThroughManager(message, onProblem);
     };
+    function select() {
+      focusTab();
+      notification.close();
+    }
     // Removed explicitly rather than with an AbortSignal, which Firefox may not accept across
     // its userscript sandbox.
     function detach() {
-      notification.removeEventListener('click', focusTab);
+      notification.removeEventListener('click', select);
       notification.removeEventListener('error', useManager);
     }
-    notification.addEventListener('click', focusTab);
+    notification.addEventListener('click', select);
     notification.addEventListener('error', useManager);
     return {
       close() {
@@ -1000,14 +1008,13 @@
     if (!insistent) return;
     const remindLater = () => {
       const sinceRaised = Math.max(0, Date.now() - alert.at);
-      alarm.reminder = setTimeout(
-        () => {
-          if (activeAlarm !== alarm) return;
-          ring();
-          remindLater();
-        },
-        REMINDER_INTERVAL_MS - (sinceRaised % REMINDER_INTERVAL_MS),
-      );
+      let wait = REMINDER_INTERVAL_MS - (sinceRaised % REMINDER_INTERVAL_MS);
+      if (wait < REMINDER_MIN_WAIT_MS) wait += REMINDER_INTERVAL_MS;
+      alarm.reminder = setTimeout(() => {
+        if (activeAlarm !== alarm) return;
+        ring();
+        remindLater();
+      }, wait);
     };
     remindLater();
   }
@@ -1820,6 +1827,7 @@
         }
         if (reason === 'storage') {
           toggle.textContent = 'Turn on';
+          turnOffButton.hidden = true;
           status.textContent =
             'Stopped: the script can’t save to its storage, so it can’t keep track of an alarm.';
           return;
@@ -2049,6 +2057,7 @@
     else showOff();
     return {
       suspendRefresh() {
+        if (!watcher.running) return;
         watcher.stop();
         toggle.textContent = 'Turn on';
         watchedTitle('settings open');

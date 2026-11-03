@@ -853,6 +853,8 @@ test('with permission, the alarm uses a site notification that asks to stay unti
     await page.addInitScript(() => {
       /** @type {{ created: { title: string, options: NotificationOptions }[], closed: number }} */
       const record = { created: [], closed: 0 };
+      /** @type {EventTarget[]} */
+      const instances = [];
       class FakeNotification extends EventTarget {
         static get permission() {
           return sessionStorage.getItem('test-notification-permission') ?? 'default';
@@ -868,12 +870,17 @@ test('with permission, the alarm uses a site notification that asks to stay unti
         constructor(title, options) {
           super();
           record.created.push({ title, options });
+          instances.push(this);
         }
         close() {
           record.closed += 1;
         }
       }
-      Object.assign(window, { Notification: FakeNotification, notificationRecord: record });
+      Object.assign(window, {
+        Notification: FakeNotification,
+        notificationRecord: record,
+        notificationInstances: instances,
+      });
     });
     await page.goto(`${site.origin}/appear`);
     const sent = await countNotificationsSent(vm);
@@ -898,8 +905,11 @@ test('with permission, the alarm uses a site notification that asks to stay unti
     expect(notification.options.body).not.toMatch(/critical/i);
     expect(await sent(), 'manager notifications').toBe(0);
 
+    await page.evaluate(() => window.notificationInstances[0].dispatchEvent(new Event('click')));
+    await expect.poll(async () => (await record()).closed, 'closed by selecting it').toBe(1);
+    await expect(page).toHaveTitle(ALARM);
     await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
-    await expect.poll(async () => (await record()).closed).toBe(1);
+    await expect.poll(async () => (await record()).closed).toBe(2);
   });
 });
 
