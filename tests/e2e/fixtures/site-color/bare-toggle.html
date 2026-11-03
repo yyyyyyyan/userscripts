@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>bare selector toggle</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      [data-theme='light'] {
+        color-scheme: light;
+      }
+      .light {
+        color-scheme: light;
+      }
+      body {
+        background: light-dark(rgb(255, 255, 255), rgb(0, 0, 0));
+        color: light-dark(black, white);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>bare selector toggle</h1>
+    <button id="attribute" onclick="document.documentElement.dataset.theme = 'light'">
+      Attribute
+    </button>
+    <button id="class" onclick="document.documentElement.classList.add('light')">Class</button>
+  </body>
+</html>

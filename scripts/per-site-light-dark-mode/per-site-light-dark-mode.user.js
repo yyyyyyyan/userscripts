@@ -34,10 +34,12 @@
   );
   const nativeMatchMedia = /** @type {(query?: string) => MediaQueryList} */ (page.matchMedia);
   const blockedSheets = new Set();
+  /** @type {CSSStyleSheet | null} */
+  let pinSheet = null;
+  let pinError = '';
   const status = {
     javascript: 'inactive',
     mediaConditions: 0,
-    colorScheme: 'unchanged',
     hooks: /** @type {string[]} */ ([]),
   };
 
@@ -67,7 +69,7 @@
         : 'light',
       javascriptOverride: status.javascript,
       mediaConditionsChanged: status.mediaConditions,
-      rootColorScheme: status.colorScheme,
+      rootColorScheme: pinState(),
       dynamicCssHooks: status.hooks,
       inaccessibleStylesheets: [...blockedSheets],
       note: 'A saved site/account theme can override this preference. Choose System/Automatic on the site.',
@@ -161,24 +163,41 @@
     }
   }
 
+  function pinApplied() {
+    return pinSheet !== null && document.adoptedStyleSheets.includes(pinSheet);
+  }
+
+  function pinState() {
+    if (pinApplied()) return mode;
+    return pinError ? `failed: ${pinError}` : 'unchanged';
+  }
+
+  // Judges the page by the value it declares with the pin lifted, so a single value (the
+  // site's own switch, whatever its selector) is left alone and only "light dark" is steered.
   function pinColorScheme() {
     const root = document.documentElement;
-    if (!root || document.readyState === 'loading' || status.colorScheme !== 'unchanged') return;
-    const meta = /** @type {HTMLMetaElement | null} */ (
-      document.querySelector('meta[name="color-scheme" i]')
-    );
-    const computed = getComputedStyle(root).colorScheme;
-    const declared = computed === 'normal' ? meta?.content || '' : computed;
-    // Avoid imposing dark browser defaults on a page that only provides light colors.
-    if (/\blight\b/i.test(declared) && /\bdark\b/i.test(declared)) {
-      try {
-        const sheet = new page.CSSStyleSheet();
-        sheet.replaceSync(`:root { color-scheme: ${mode}; }`);
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-        status.colorScheme = mode;
-      } catch (error) {
-        status.colorScheme = `failed: ${/** @type {Error} */ (error).message}`;
+    if (!root || document.readyState === 'loading') return;
+    try {
+      if (pinSheet && pinApplied()) {
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(
+          (sheet) => sheet !== pinSheet,
+        );
       }
+      const meta = /** @type {HTMLMetaElement | null} */ (
+        document.querySelector('meta[name="color-scheme" i]')
+      );
+      const computed = getComputedStyle(root).colorScheme;
+      const declared = computed === 'normal' ? meta?.content || '' : computed;
+      // Avoid imposing dark browser defaults on a page that only provides light colors.
+      if (!/\blight\b/i.test(declared) || !/\bdark\b/i.test(declared)) return;
+      if (!pinSheet) {
+        pinSheet = new page.CSSStyleSheet();
+        pinSheet.replaceSync(`:root { color-scheme: ${mode} !important; }`);
+      }
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, pinSheet];
+      pinError = '';
+    } catch (error) {
+      pinError = /** @type {Error} */ (error).message;
     }
   }
 
@@ -292,6 +311,8 @@
     },
     true,
   );
+  new MutationObserver(pinColorScheme).observe(document.documentElement, { attributes: true });
+
   document.addEventListener('DOMContentLoaded', fullScan, { once: true });
   window.addEventListener('load', fullScan, { once: true });
   fullScan();
