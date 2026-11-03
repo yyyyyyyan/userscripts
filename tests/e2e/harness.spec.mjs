@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 
-import { launchWithViolentmonkey, openShadow, serve } from './harness.mjs';
+import { launchWithViolentmonkey, openMenu, openShadow, serve } from './harness.mjs';
 
 const probe = await readFile(new URL('./fixtures/probe.user.js', import.meta.url), 'utf8');
+const menuProbe = await readFile(new URL('./fixtures/menu-probe.user.js', import.meta.url), 'utf8');
 
 test('installs a script and persists GM storage across a reload', async () => {
   const site = await serve({
@@ -30,6 +31,22 @@ test('maps a host name to a local server', async () => {
     const page = await vm.context.newPage();
     await page.goto('http://example.test/');
     await expect(page).toHaveTitle('mapped');
+  } finally {
+    await vm.close();
+    await site.close();
+  }
+});
+
+test('openMenu opens the popup for the page and runs a menu command', async () => {
+  const site = await serve({ '/': '<!doctype html><title>menu</title><p>hello</p>' });
+  const vm = await launchWithViolentmonkey();
+  try {
+    await vm.install(menuProbe);
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/`);
+    const popup = await openMenu(vm.context, vm.extensionId, page);
+    await popup.getByText('Mark the page').click();
+    await expect(page.locator('html')).toHaveAttribute('data-menu-clicked', 'yes');
   } finally {
     await vm.close();
     await site.close();

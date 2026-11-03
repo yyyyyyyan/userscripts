@@ -124,6 +124,28 @@ async function waitForInjector(worker) {
 }
 
 /**
+ * Opens Violentmonkey's popup bound to the given page's tab. The target stays the active
+ * tab and the popup opens in the background, which is what makes the popup list that
+ * tab's menu commands.
+ * @param {BrowserContext} context
+ * @param {string} extensionId
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<import('@playwright/test').Page>}
+ */
+export async function openMenu(context, extensionId, page) {
+  await page.bringToFront();
+  const worker = await serviceWorkerOf(context);
+  const opened = context.waitForEvent('page', { timeout: 15_000 });
+  await worker.evaluate(
+    (url) => chrome.tabs.create({ url, active: false }),
+    `chrome-extension://${extensionId}/popup/index.html`,
+  );
+  const popup = await opened;
+  await popup.waitForLoadState();
+  return popup;
+}
+
+/**
  * Launches Chromium with the pinned Violentmonkey in a fresh temporary profile.
  * `CHROMIUM_PATH` selects a system Chromium instead of Playwright's.
  * @param {{ hostMap?: Record<string, number> }} [options] Maps host names to local ports.
