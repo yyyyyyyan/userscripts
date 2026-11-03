@@ -568,6 +568,66 @@ test("reloading another site's page while the watched page reloads raises no ala
   });
 });
 
+test("another site can't raise a redirect alarm with its own session storage", async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/appear?forged`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    const other = await vm.context.newPage();
+    await other.goto(`http://other.test:${site.port}/plain`);
+    await other.evaluate(
+      ([watchUrl, watchOrigin]) =>
+        sessionStorage.setItem(
+          'reload-until:handoff',
+          JSON.stringify({
+            watchUrl,
+            watchOrigin,
+            watchHost: '127.0.0.1',
+            fromUrl: watchUrl,
+            at: Date.now(),
+            nonce: 'forged',
+          }),
+        ),
+      [watched, site.origin],
+    );
+    await other.reload();
+    await expect(other).toHaveTitle('Plain');
+    await other.waitForTimeout(3000);
+
+    await expect(widget(other)).toHaveCount(0);
+    await expect(page).toHaveTitle(WATCHING);
+    const stored = await storedValues(vm);
+    expect(pendingAlertOf(stored, `watch:${watched}`)).toBeNull();
+    expect(/** @type {{ enabled?: boolean }} */ (stored[`watch:${watched}`]).enabled).toBe(true);
+  });
+});
+
+test('a redirect that ends on another watched page shows the alarm first', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const landing = `${site.origin}/login`;
+    await page.goto(landing);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+    const watched = `${site.origin}/redirect`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.waitForURL(landing, { timeout: 30_000 });
+    await expect(page).toHaveTitle(ALARM);
+    await expect(widget(page).getByRole('alert')).toContainText(watched);
+    await page.waitForTimeout(2000);
+    await expect(page).toHaveTitle(ALARM);
+
+    await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
+    await expect(page).toHaveTitle(WATCHING);
+  });
+});
+
 test('leaving on purpose pauses instead of alarming', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();

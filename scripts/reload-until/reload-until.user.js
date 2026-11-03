@@ -314,6 +314,9 @@
    * reloads ended, clears the handoff record if so, and raises the redirect alarm when the
    * reload ended somewhere other than the watched URL. The full watched URL is only compared as
    * a string here, never parsed, because another site's page can replace `URL`.
+   *
+   * The session record is written on the watched page, and session storage is kept per site, so
+   * a real one always names this site. One that names another site was written by this page.
    * @param {string} url The current normalized URL.
    */
   function claimHandoff(url) {
@@ -322,7 +325,11 @@
     if (raw) {
       sessionSet(SESSION_HANDOFF_KEY, null);
       const local = parseHandoff(raw);
-      if (isOwnHandoff(local)) {
+      if (
+        isOwnHandoff(local) &&
+        local.watchOrigin === location.origin &&
+        local.watchUrl.startsWith(location.origin + '/')
+      ) {
         const shared = /** @type {Handoff | null} */ (GM_getValue(HANDOFF_KEY, null));
         if (shared?.nonce === local.nonce) GM_deleteValue(HANDOFF_KEY);
         if (local.watchUrl !== url) raiseRedirectAlarm(local, url);
@@ -352,7 +359,7 @@
       if (latest?.nonce !== shared.nonce) return;
       GM_deleteValue(HANDOFF_KEY);
       raiseRedirectAlarm(shared, url);
-      if (!runner) boot();
+      boot();
     }, HANDOFF_CLAIM_DELAY_MS);
   }
 
@@ -1089,6 +1096,11 @@
   /** @type {string | null} The watch the widget shows, here or away from its URL. */
   let shownUrl = null;
 
+  /**
+   * Shows what this tab needs most: this page's own alarm, then an alarm the tab carries from
+   * another page, then this page's running watch. A watch waits while another watch's alarm is
+   * shown and starts once that alarm is acknowledged.
+   */
   function boot() {
     if (runner) runner.destroy();
     runner = null;
@@ -1096,16 +1108,16 @@
     const url = currentUrl();
     lastUrl = url;
     const watch = url === null ? null : readWatch(url);
+    const away = findAwayAlarm();
     if (url !== null && watch) {
       followWatchedPage(url);
-      if (watch.enabled || watch.pendingAlert) {
+      if (watch.pendingAlert || (watch.enabled && !away)) {
         shownUrl = url;
         keepAlarmFor(watch);
         if (!editor) runner = showWidget(watch);
         return;
       }
     }
-    const away = findAwayAlarm();
     keepAlarmFor(away);
     if (!away) return;
     listenTo(away.url);

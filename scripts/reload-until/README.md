@@ -259,7 +259,9 @@ It asks your userscript manager for these permissions:
 - Your userscript manager may run the script inside the page's own JavaScript.
   A page built to spy on userscripts could then see what the script does on
   it, such as the alarm text, and the addresses of all your watches if you open
-  the settings there. The panel itself shows only the current site's watches,
+  the settings there. If a reload ends on such a page, it could also see the
+  full address of the watch whose alarm it shows, even though the alarm names
+  only the site. The panel itself shows only the current site's watches,
   and the script ignores clicks that a page fakes with its own scripts.
 - If your manager syncs or backs up its data, your watches go with it. That is
   the manager's feature, not this script's.
