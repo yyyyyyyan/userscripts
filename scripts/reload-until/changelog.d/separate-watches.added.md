@@ -1,1 +1,1 @@
-You can watch several pages in different tabs at once, and each tab keeps its own watch and alarm.
+You can watch several pages at once, each in its own tab, and each page keeps its own watch and alarm.

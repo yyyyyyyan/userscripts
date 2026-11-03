@@ -113,13 +113,18 @@ checked:
 
 ### Extra checks for Reload Until
 
-The automated tests run Reload Until in Violentmonkey on Chromium only. Add
-these lines to its checklist:
+The automated tests run Reload Until in Violentmonkey on Chromium only, on
+local test pages. Add these lines to its checklist:
 
 ```markdown
+- [ ] A real ticket- or stock-style page of your choosing: the alarm goes off
+      when the part you watch changes.
+- [ ] Your own sign-in case: while a watch runs, let the session expire or
+      sign out in another tab. The alarm goes off on the page where the reload
+      ended, and **Open watched page** takes you back.
 - [ ] Firefox and Chromium, after **Allow desktop notifications** in the
-      settings panel: an alarm's desktop notification stays on screen until
-      you click it, and **Acknowledge** closes it.
+      settings panel: an alarm's desktop notification stays on screen, without
+      disappearing after a few seconds, until **Acknowledge** closes it.
 - [ ] Firefox and Chromium, on a site where notifications aren't allowed: the
       alarm still shows a desktop notification (from the userscript manager).
 - [ ] Firefox: an alarm with the insistent alert style repeats its desktop
