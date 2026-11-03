@@ -494,7 +494,8 @@ const TOTAL_MS = 100;
 
 /**
  * Builds a page shaped like a large real site: about 27,000 rules, one in eleven of them a
- * `prefers-color-scheme` block, split between a linked sheet and an inline one.
+ * `prefers-color-scheme` block, split between a linked sheet and an inline one, and about
+ * 77,000 elements.
  * @returns {{ html: string, css: string }}
  */
 function largePage() {
@@ -513,45 +514,57 @@ function largePage() {
     css: rules(0, 20000),
     html: [
       '<!doctype html><html><head><meta charset="utf-8"><title>large</title>',
-      `<link rel="stylesheet" href="/large.css"><style>${rules(0, 4544)}</style></head>`,
-      `<body>${rows.join('')}</body></html>`,
+      `<link rel="stylesheet" href="/large.css"><style>:root{color-scheme:light dark}\n${rules(0, 4544)}</style></head>`,
+      `<body>${rows.join('')}<div>${'<i></i>'.repeat(75000)}</div></body></html>`,
     ].join('\n'),
   };
 }
 
 /**
- * Times the script's work while the page loads, as separate runs: its first synchronous run,
- * from its `matchMedia` replacement until control returns to the event loop, and every
- * mutation observer callback and `load` or `DOMContentLoaded` listener it sets up. Those
- * callbacks are wrapped only once the script runs, because Violentmonkey does not inject into
- * a page whose built-ins were already replaced.
+ * Times the script's work while the page loads, as separate runs:
+ * - its first synchronous run, from its `matchMedia` replacement until control returns to the
+ *   event loop
+ * - every mutation observer callback and document `load` or `DOMContentLoaded` listener it
+ *   sets up, wrapped once the script runs
+ * - every animation frame callback it requests, through a wrapper installed up front
+ * - the window `load` listeners registered between page start and the end of its first run
+ *
+ * Violentmonkey does not inject into a page whose `addEventListener` was already replaced, and
+ * it binds `requestAnimationFrame` and `window.addEventListener` before the script runs, which
+ * is why each of these is reached a different way.
  */
 function timeScriptWork() {
   const own =
     Object.getOwnPropertyDescriptor(window, 'matchMedia') ??
     Object.getOwnPropertyDescriptor(Window.prototype, 'matchMedia');
   let current = own?.value;
-  /** @type {{ readyState: string, runs: number, longest: number, total: number } | undefined} */
+  /**
+   * @type {{
+   *   readyState: string, runs: number, longest: number, total: number,
+   *   byKind: Record<string, number>,
+   * } | undefined}
+   */
   let work;
   Object.defineProperty(window, '__scriptWork', { get: () => work });
 
-  /** @param {number} start */
-  const record = (start) => {
+  /** @param {string} kind @param {number} start */
+  const record = (kind, start) => {
     if (!work) return;
     const ms = performance.now() - start;
     work.runs++;
     work.total += ms;
     work.longest = Math.max(work.longest, ms);
+    work.byKind[kind] = (work.byKind[kind] ?? 0) + ms;
   };
 
-  /** @param {Function} callback @returns {any} */
-  const timed = (callback) =>
+  /** @param {string} kind @param {Function} callback @returns {any} */
+  const timed = (kind, callback) =>
     function (/** @type {any[]} */ ...args) {
       const start = performance.now();
       try {
         return Reflect.apply(callback, this, args);
       } finally {
-        record(start);
+        record(kind, start);
       }
     };
 
@@ -560,18 +573,27 @@ function timeScriptWork() {
     window.MutationObserver = class extends NativeObserver {
       /** @param {MutationCallback} callback */
       constructor(callback) {
-        super(timed(callback));
+        super(timed('observer', callback));
       }
     };
     const addEventListener = EventTarget.prototype.addEventListener;
     EventTarget.prototype.addEventListener = function (type, listener, options) {
       const timedListener =
         typeof listener === 'function' && ['load', 'DOMContentLoaded'].includes(type)
-          ? timed(listener)
+          ? timed(type, listener)
           : listener;
       return addEventListener.call(this, type, timedListener, options);
     };
   }
+
+  const requestFrame = window.requestAnimationFrame;
+  window.requestAnimationFrame = (callback) =>
+    requestFrame.call(window, work ? timed('frame', callback) : callback);
+  const nativeAddEventListener = EventTarget.prototype.addEventListener;
+  let windowLoadStart = 0;
+  window.addEventListener('load', () => {
+    windowLoadStart = performance.now();
+  });
 
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -581,8 +603,11 @@ function timeScriptWork() {
       current = value;
       if (work) return;
       const start = performance.now();
-      work = { readyState: document.readyState, runs: 0, longest: 0, total: 0 };
-      queueMicrotask(() => record(start));
+      work = { readyState: document.readyState, runs: 0, longest: 0, total: 0, byKind: {} };
+      queueMicrotask(() => {
+        record('first run', start);
+        nativeAddEventListener.call(window, 'load', () => record('window load', windowLoadStart));
+      });
       timeCallbacks();
     },
   });
@@ -623,6 +648,7 @@ test('the script walks a page with 27,000 rules quickly', async () => {
           `longest run ${work.longest.toFixed(1)} ms`,
           `${work.total.toFixed(1)} ms over ${work.runs} runs`,
           `injected while ${work.readyState}`,
+          ...Object.entries(work.byKind).map(([kind, ms]) => `${kind} ${ms.toFixed(1)} ms`),
         ].join(', '),
       });
     }

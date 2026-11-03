@@ -409,6 +409,7 @@
   const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
   const schemeMeta = 'meta[name="color-scheme" i]';
   const schemeSelector = `${selector}, ${schemeMeta}`;
+  const schemeTags = ['style', 'link', 'source', 'meta'];
   const observed = {
     subtree: true,
     childList: true,
@@ -447,6 +448,7 @@
   function processSubtree(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return false;
     const element = /** @type {Element} */ (node);
+    if (!element.firstElementChild && !schemeTags.includes(element.localName)) return false;
     const matches = element.matches(schemeSelector);
     if (!matches && !element.querySelector(schemeSelector)) return false;
     if (matches) processStyleElement(element);
@@ -459,35 +461,48 @@
     return element.localName === 'meta' && element.matches(schemeMeta);
   }
 
+  /** @param {Node} node */
+  function holdsStyles(node) {
+    return (
+      node.nodeType === Node.ELEMENT_NODE &&
+      (/** @type {Element} */ (node).matches(schemeSelector) ||
+        /** @type {Element} */ (node).querySelector(schemeSelector) !== null)
+    );
+  }
+
+  // The parser adds every element as its own record, so a large page delivers tens of thousands
+  // of them and each property read counts.
   const observer = new MutationObserver((mutations) => {
     let stylesChanged = false;
-    for (const mutation of mutations) {
+    const parsing = document.readyState === 'loading';
+    for (let i = 0, count = mutations.length; i < count; i++) {
+      const mutation = mutations[i];
+      const type = mutation.type;
       const target = /** @type {Element} */ (mutation.target);
-      if (mutation.type === 'characterData') {
-        const style = target.parentElement;
-        if (style?.localName === 'style') {
-          processStyleElement(style);
+      if (type === 'childList') {
+        if (target.localName === 'style') {
+          processStyleElement(target);
           stylesChanged = true;
+          continue;
         }
-      } else if (mutation.type === 'attributes') {
+        const added = mutation.addedNodes;
+        for (let j = 0; j < added.length; j++) if (processSubtree(added[j])) stylesChanged = true;
+        // Removals only call for a re-check, which the scan at DOMContentLoaded schedules anyway.
+        if (parsing) continue;
+        const removed = mutation.removedNodes;
+        for (let j = 0; j < removed.length; j++) if (holdsStyles(removed[j])) stylesChanged = true;
+      } else if (type === 'attributes') {
         if (mutation.attributeName === 'content') {
           if (isSchemeMeta(target)) stylesChanged = true;
         } else if (['link', 'style', 'source'].includes(target.localName)) {
           processStyleElement(target);
           stylesChanged = true;
         }
-      } else if (target.localName === 'style') {
-        processStyleElement(target);
-        stylesChanged = true;
       } else {
-        for (const node of mutation.addedNodes) if (processSubtree(node)) stylesChanged = true;
-        for (const node of mutation.removedNodes) {
-          if (
-            node.nodeType === Node.ELEMENT_NODE &&
-            (/** @type {Element} */ (node).matches(schemeSelector) ||
-              /** @type {Element} */ (node).querySelector(schemeSelector))
-          )
-            stylesChanged = true;
+        const style = target.parentElement;
+        if (style?.localName === 'style') {
+          processStyleElement(style);
+          stylesChanged = true;
         }
       }
     }
@@ -523,16 +538,25 @@
 
   /** @param {Document | ShadowRoot} root */
   function scanShadowRoots(root) {
-    for (const element of root.querySelectorAll('*')) {
-      if (!element.shadowRoot) continue;
-      watchShadowRoot(element.shadowRoot);
-      scanShadowRoots(element.shadowRoot);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const shadow = /** @type {Element} */ (node).shadowRoot;
+      if (!shadow) continue;
+      watchShadowRoot(shadow);
+      scanShadowRoots(shadow);
     }
   }
 
+  let shadowRootsFound = false;
+
+  // Visiting every element is slow on large pages, so existing roots are searched for once, after
+  // parsing has created every declarative one. Later roots arrive through the attachShadow hook.
   function fullScan() {
     scanRoot(document);
-    scanShadowRoots(document);
+    if (!shadowRootsFound && document.readyState !== 'loading') {
+      shadowRootsFound = true;
+      scanShadowRoots(document);
+    }
     schedulePin();
   }
 
