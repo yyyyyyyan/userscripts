@@ -1,0 +1,3 @@
+[per-file-ignores]
+"scripts/*/changelog.d/*.md" = ["MD041", "MD013"]
+"scripts/*/CHANGELOG.md" = ["MD013"]

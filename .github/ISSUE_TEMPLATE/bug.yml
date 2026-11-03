@@ -7,8 +7,8 @@ body:
     attributes:
       label: Script
       options:
-        - per-site-light-dark-mode
-        - reload-until
+        - Per-Site Light/Dark Mode (per-site-light-dark-mode)
+        - Reload Until (reload-until)
     validations:
       required: true
   - type: dropdown
@@ -38,10 +38,8 @@ body:
   - type: input
     id: url
     attributes:
-      label: Page address
+      label: Page address, if you can share it
       description: The address of the page where the problem happens.
-    validations:
-      required: true
   - type: textarea
     id: steps
     attributes:

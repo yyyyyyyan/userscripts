@@ -76,15 +76,18 @@ export async function findReleases(beforeSha, afterSha, repo) {
 
 /**
  * Points the README's relative `images/` links at the per-script folder in
- * `dist`. Absolute URLs and other relative paths are left alone.
+ * `dist`. Inline links, HTML `src` attributes and reference definitions are
+ * rewritten, with or without a leading `./`. Absolute URLs and other relative
+ * paths are left alone.
  * @param {string} readme
  * @param {string} slug
  * @returns {string}
  */
 function rewriteImageLinks(readme, slug) {
   return readme
-    .replace(/(\]\(\s*)images\//g, `$1images/${slug}/`)
-    .replace(/(\bsrc\s*=\s*["'])images\//g, `$1images/${slug}/`);
+    .replace(/(\]\(\s*)(?:\.\/)?images\//g, `$1images/${slug}/`)
+    .replace(/(\bsrc\s*=\s*["'])(?:\.\/)?images\//g, `$1images/${slug}/`)
+    .replace(/^( {0,3}\[[^\]\n]+\]:\s*)(?:\.\/)?images\//gm, `$1images/${slug}/`);
 }
 
 /**

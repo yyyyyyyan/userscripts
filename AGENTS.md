@@ -42,10 +42,16 @@ writes it and nothing else does.
 npm ci                                  # install pinned dev tools
 prek run --all-files                    # format, lint, type-check, spell-check
 npm test                                # unit and tooling tests
+npx playwright install chromium         # once, before npm run e2e
 npm run e2e                             # Playwright + Violentmonkey smoke tests
+node tools/check.mjs --base origin/main # fragment and @version rules, as in CI
 node tools/changelog-add.mjs <slug> <section> <short-name> "<sentence>"
 node tools/release-prepare.mjs <slug>   # assemble changelog, set @version
 ```
+
+Setup needs Node 22 or later and a system `unzip`, which
+`tools/fetch-violentmonkey.mjs` uses. To add a script, follow "Add a script"
+in `CONTRIBUTING.md`.
 
 Sections are `breaking added changed deprecated removed fixed security`. A
 fragment is one complete sentence ending in `.`, `!` or `?`.

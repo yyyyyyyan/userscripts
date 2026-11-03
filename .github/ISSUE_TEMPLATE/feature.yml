@@ -7,8 +7,8 @@ body:
     attributes:
       label: Script
       options:
-        - per-site-light-dark-mode
-        - reload-until
+        - Per-Site Light/Dark Mode (per-site-light-dark-mode)
+        - Reload Until (reload-until)
     validations:
       required: true
   - type: textarea

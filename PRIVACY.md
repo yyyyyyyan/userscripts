@@ -5,12 +5,11 @@ sends over the network.
 
 ## In general
 
-- Scripts store data only in your userscript manager, on your own device. They
-  do not write to any server.
+- Scripts keep what they store on your own device. They do not write to any
+  server. The row for each script below says what it stores and where.
 - Scripts make no network requests unless a script's row below says otherwise.
 - Scripts do not collect analytics, identifiers or browsing history, and they
   do not share anything with the author or with third parties.
-- Removing a script from your userscript manager also removes its stored data.
 
 ## Per script
 

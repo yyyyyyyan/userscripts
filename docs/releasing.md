@@ -41,12 +41,11 @@ Nobody edits `@version` by hand.
 
 To prepare a release:
 
-1. Create the release branch from an up-to-date `main`. Use the version the
-   pending fragments call for. If you aren't sure, name it `release/<slug>` and
-   rename it with `git branch -m` once step 2 prints the version.
+1. Create the release branch from an up-to-date `main`. Always name it
+   `release/<slug>`:
 
    ```bash
-   git switch -c release/<slug>-<version>
+   git switch -c release/<slug>
    ```
 
 2. Run the prepare tool. It prints the new version:
@@ -68,26 +67,90 @@ To prepare a release:
    gh pr create --title "release(<slug>): <version>"
    ```
 
-5. Run the manual checklist in the pull request.
+5. If this is the script's first release, or something manager-specific
+   changed, run the manual checklist in the pull request.
 
-6. Squash-merge the pull request.
+6. Update the branch from `main`, then squash-merge the pull request. Merge
+   release pull requests one at a time and wait for each publish run to finish
+   before you merge the next. The `release` concurrency group keeps only one
+   pending run, so a third queued run is dropped.
 
 ## Manual release checklist
 
-Automated tests don't cover real sites or Tampermonkey, so every release pull
-request carries this checklist. Paste it into the pull request description and
-fill in the script-specific list.
+Automated tests don't cover real sites or Tampermonkey, so the owner runs this
+checklist before each script's 1.0.0. Later releases repeat it only when
+something manager-specific changed. Paste it into the pull request description
+and fill in the script-specific list.
 
 ```markdown
 ## Manual checks
 
-- [ ] Installed the script from the pull request's raw file in Tampermonkey on
-      Chromium.
+- [ ] Installed the script from the pull request in Tampermonkey on Chromium.
 - [ ] Installed the same file in Violentmonkey on Firefox.
 - [ ] Ran the steps under **How to use** in the script's README in both.
 - [ ] Checked each real site on the script's list:
   - [ ] <site>
 ```
 
+While the repository is private, raw files need a sign-in, so a pull request's
+file can't be installed from its address. Install from a local copy instead:
+check out the release branch and paste the script file into a new script in your
+userscript manager.
+
 When every box is checked, reply "checked" in the pull request. Squash-merge
-only after that reply.
+only after that reply. When the checklist doesn't apply, merge once the checks
+pass.
+
+## Publish
+
+The `release` workflow (`.github/workflows/release.yml`) runs on every push to
+`main` that changes `scripts/`. It finds the releases in the pushed commits: a
+script whose `@version` rose to 1.0.0 or more and whose `CHANGELOG.md` gained a
+section for that version. For each release it:
+
+1. Copies `<slug>.user.js`, the README as `<slug>.md` and the images into the
+   `dist` branch.
+2. Commits there with the message `<Name> <version>`, followed by the changelog
+   section. Greasy Fork shows that message as the script's changelog.
+3. Pushes `dist`, then tags the release commit on `main` as
+   `<slug>-v<version>`.
+
+Greasy Fork reads `dist`, so a README change reaches it only with the next
+release of that script.
+
+## Publish a script for the first time
+
+1. Make the repository public. Do this once, before the first script.
+2. Merge the script's release pull request and wait for the publish run to
+   finish.
+3. On Greasy Fork, import
+   `https://raw.githubusercontent.com/yyyyyyyan/userscripts/dist/<slug>.user.js`
+   with the sync type set to **Automatic**.
+4. Set the additional info sync address to
+   `https://raw.githubusercontent.com/yyyyyyyan/userscripts/dist/<slug>.md`.
+5. Make a follow-up patch release. If Greasy Fork shows the new version, the
+   webhook works.
+
+## Recover from a failed publish run
+
+If a run fails partway, running it again fails too. It stops with "nothing to
+commit" because `dist` already has the release, or with a tag that already
+exists. Finish by hand from a checkout of `main`:
+
+1. Check `dist` on GitHub for the `<Name> <version>` commit. If it's missing,
+   rebuild it. `<before>` is the commit before the release, and `<release>` is
+   the release commit:
+
+   ```bash
+   git fetch origin
+   git worktree add --detach ../dist origin/dist
+   node tools/release-publish.mjs --before <before> --after <release> --dist ../dist
+   git -C ../dist push origin HEAD:refs/heads/dist
+   ```
+
+2. Create the missing tag on the release commit and push it:
+
+   ```bash
+   git tag <slug>-v<version> <release>
+   git push origin <slug>-v<version>
+   ```

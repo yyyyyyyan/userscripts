@@ -32,11 +32,11 @@ Until you do, Chrome stops the manager from running any script.
 ## Install a script
 
 1. Open the script's install link from the table above.
-2. Select **Install** on the Greasy Fork page.
+2. Select **Install this script** on the Greasy Fork page.
 3. Confirm in the install tab your userscript manager opens.
 
-Your userscript manager checks for updates on its own schedule and installs
-new versions without asking again.
+Your userscript manager can check for updates and install them for you. Its
+settings control how often it checks.
 
 ## Supported managers
 
@@ -45,9 +45,10 @@ Chrome and Firefox. Other managers may work, but they are not supported.
 
 ## Privacy
 
-Scripts store their settings in your userscript manager and nowhere else. A
-script makes no network requests unless its row in [PRIVACY.md](PRIVACY.md)
-says so. Each script's README lists what it can access on a page.
+Scripts keep what they store on your device. A script makes no network
+requests unless its row in [PRIVACY.md](PRIVACY.md) says so. That row also
+says what the script stores and where. Each script's README lists what it can
+access on a page.
 
 ## Get help
 
