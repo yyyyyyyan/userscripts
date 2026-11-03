@@ -1,34 +1,74 @@
 // ==UserScript==
-// @name         Page Watch — refresh until found / missing
-// @namespace    yan-orestes/page-watch
-// @version      2.3.0
-// @description  Manage per-URL refresh watches through a settings panel. No code editing needed.
-// @match        http://*/*
-// @match        https://*/*
-// @run-at       document-idle
+// @name          Reload Until
+// @namespace     yyyyyyyan/reload-until
+// @version       0.0.0
+// @description   Reloads a page until something appears or disappears, then raises an alarm you can't miss.
+// @author        yyyyyyyan
+// @license       GPL-3.0-or-later
+// @homepageURL   https://github.com/yyyyyyyan/userscripts/tree/main/scripts/reload-until
+// @supportURL    https://github.com/yyyyyyyan/userscripts/issues
+// @match         http://*/*
+// @match         https://*/*
+// @run-at        document-idle
 // @noframes
-// @grant        GM_getTab
-// @grant        GM_saveTab
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_addValueChangeListener
-// @grant        GM_notification
-// @grant        GM_registerMenuCommand
+// @grant         GM_getValue
+// @grant         GM_setValue
+// @grant         GM_deleteValue
+// @grant         GM_listValues
+// @grant         GM_addValueChangeListener
+// @grant         GM_notification
+// @grant         GM_registerMenuCommand
+// @grant         window.focus
+// @compatible    chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
+// @compatible    firefox Violentmonkey or Tampermonkey
+// @incompatible  safari Userscripts lacks the menu commands this script needs
 // ==/UserScript==
 
 (() => {
   'use strict';
-  // INSTALL ONCE: replace the old script with this entire file and save.
-  // CONFIGURE: Tampermonkey menu > Page Watch: Manage watches.
-  // One watch per exact URL (including query parameters, ignoring #fragment).
-  // Settings and enabled/disabled state persist across tabs and browser restarts.
-  // Watches run only while their page is open. No background fetching or purchases.
-  // Native notifications request persistence. Chromium/Linux may promote these to critical;
-  // Firefox and desktop notification services can handle urgency differently.
-  // Monitoring and tab-title countdowns do not depend on focus or visibility.
-  // Browser background throttling may delay ticks; suspended/discarded tabs cannot run.
 
-  const STORAGE = 'page-watch:v2:watches';
+  /**
+   * @typedef {object} PendingAlert
+   * @property {string} title
+   * @property {string} text
+   * @property {number} createdAt
+   */
+
+  /**
+   * @typedef {object} Rule
+   * @property {string} url
+   * @property {boolean} enabled
+   * @property {string} lastStatus
+   * @property {number} intervalSeconds
+   * @property {string} stopWhen
+   * @property {string} selector
+   * @property {string} text
+   * @property {boolean} caseSensitive
+   * @property {number} settleSeconds
+   * @property {number} confirmSeconds
+   * @property {string} readySelector
+   * @property {string} notificationTitle
+   * @property {string} notificationText
+   * @property {boolean} desktopNotification
+   * @property {boolean} sound
+   * @property {number} soundRepeatSeconds
+   * @property {number} volume
+   * @property {boolean} requireExplicitDismissal
+   * @property {number} notificationRepeatSeconds
+   * @property {PendingAlert | null} pendingAlert
+   * @property {string} notificationBackend
+   */
+
+  /** @typedef {Window & { webkitAudioContext?: typeof AudioContext }} LegacyAudioWindow */
+
+  /**
+   * @typedef {object} Runner
+   * @property {() => void} suspendRefresh
+   * @property {() => void} destroy
+   */
+
+  const STORAGE = 'reload-until:watches';
+  /** @type {Omit<Rule, 'url'>} */
   const DEFAULTS = {
     enabled: false,
     lastStatus: 'paused',
@@ -40,7 +80,7 @@
     settleSeconds: 5,
     confirmSeconds: 3,
     readySelector: '',
-    notificationTitle: 'Page Watch — condition met!',
+    notificationTitle: 'Reload Until — condition met!',
     notificationText: 'The watched condition is met. Check the page now.',
     desktopNotification: true,
     sound: true,
@@ -50,17 +90,8 @@
     notificationRepeatSeconds: 30,
     pendingAlert: null,
     notificationBackend: 'auto',
-    alertOnRedirect: true,
   };
-  const PRESET = {
-    ...DEFAULTS,
-    url: 'https://tickets.example.com/events/match-123/',
-    selector: 'div.alert.alert-error[role="alert"]',
-    text: 'No momento, todos os ingressos estão reservados.',
-    notificationTitle: 'Tickets — page changed!',
-    notificationText:
-      'The all-tickets-reserved warning is gone. Check the page now; availability is not guaranteed.',
-  };
+  /** @param {string} value */
   function normalizeURL(value) {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS URL.');
@@ -70,7 +101,7 @@
     return url.href;
   }
   // Use the standard DOM API, not unsafeWindow, so Firefox can wrap arguments
-  // normally across its userscript sandbox. Never change browser preferences.
+  // normally across its userscript sandbox.
   function nativeAPI() {
     try {
       return window.isSecureContext !== false && typeof window.Notification === 'function'
@@ -88,74 +119,18 @@
     }
   }
   const currentURL = () => normalizeURL(location.href);
-  const readRules = () => GM_getValue(STORAGE, {});
+  const readRules = () => GM_getValue(STORAGE, /** @type {Record<string, Rule>} */ ({}));
+  /** @type {Runner | null} */
   let runner = null;
+  /** @type {HTMLElement | null} */
   let editor = null;
   let currentSignature = '';
-  let tabState = {};
   let lastURL = currentURL();
-  function displayedRuleURL(rules) {
-    const tracked = tabState.pageWatch?.url;
-    return tracked && rules[tracked]?.pendingAlert ? tracked : currentURL();
-  }
+  /** @param {Record<string, Rule>} rules */
   function signature(rules) {
-    return JSON.stringify(rules[displayedRuleURL(rules)] || null);
+    return JSON.stringify(rules[currentURL()] || null);
   }
-  function forgetWatch(url) {
-    if (tabState.pageWatch?.url !== url) return;
-    delete tabState.pageWatch;
-    try {
-      GM_saveTab(tabState);
-    } catch (error) {
-      console.warn('Page Watch: tab tracking cleanup failed', error);
-    }
-  }
-  function trackWatch(url, ready, failed) {
-    tabState.pageWatch = { url };
-    try {
-      GM_saveTab(tabState, ready);
-    } catch (error) {
-      failed(error);
-    }
-  }
-  function checkDestination() {
-    const source = tabState.pageWatch?.url;
-    if (!source || source === currentURL()) return;
-    const rule = readRules()[source];
-    if (rule?.pendingAlert) return; // Preserve an already pending alert across navigation.
-    if (!rule?.enabled || rule.alertOnRedirect === false) {
-      forgetWatch(source);
-      return;
-    }
-    const destination = currentURL();
-    const displayURL = (value) => {
-      const url = new URL(value);
-      return url.origin + url.pathname;
-    };
-    saveRule({
-      ...DEFAULTS,
-      ...rule,
-      enabled: false,
-      lastStatus: 'stopped',
-      pendingAlert: {
-        kind: 'redirect',
-        title: 'Page Watch — unexpected URL change',
-        createdAt: Date.now(),
-        destinationURL: destination,
-        text:
-          'Monitoring stopped because this tab left its watched URL.\nExpected: ' +
-          displayURL(source) +
-          '\nOpened: ' +
-          displayURL(destination) +
-          '\nYour login may have expired. Check the page, then return to the watched URL to enable monitoring again.',
-      },
-    });
-    // Make the alert visible even if a single-page navigation happened during editing.
-    if (editor) {
-      editor.remove();
-      editor = null;
-    }
-  }
+  /** @param {Record<string, Rule>} rules */
   function writeRules(rules) {
     // Record our own write before listeners run; don't tear down a fresh alarm.
     const previous = currentSignature;
@@ -167,20 +142,26 @@
       throw error;
     }
   }
+  /** @param {Rule} rule */
   function saveRule(rule) {
     const rules = readRules();
     rules[rule.url] = { ...rule };
     writeRules(rules);
   }
+  /** @param {Rule} rule */
   function validateRule(rule) {
     normalizeURL(rule.url);
-    if (!['auto', 'tampermonkey'].includes(rule.notificationBackend))
+    if (!['auto', 'manager'].includes(rule.notificationBackend))
       throw new Error('Choose a valid notification method.');
-    for (const key of ['intervalSeconds', 'soundRepeatSeconds', 'notificationRepeatSeconds']) {
+    for (const key of /** @type {const} */ ([
+      'intervalSeconds',
+      'soundRepeatSeconds',
+      'notificationRepeatSeconds',
+    ])) {
       if (!Number.isFinite(rule[key]) || rule[key] < 1 || rule[key] > 86400)
         throw new Error(key + ' must be between 1 and 86400 seconds.');
     }
-    for (const key of ['settleSeconds', 'confirmSeconds']) {
+    for (const key of /** @type {const} */ (['settleSeconds', 'confirmSeconds'])) {
       if (!Number.isFinite(rule[key]) || rule[key] < 0 || rule[key] > 86400)
         throw new Error(key + ' must be between 0 and 86400 seconds.');
     }
@@ -199,7 +180,7 @@
     runner = null;
     const rules = readRules();
     currentSignature = signature(rules);
-    const rule = rules[displayedRuleURL(rules)];
+    const rule = rules[currentURL()];
     if (!editor && rule) runner = runWatch({ ...DEFAULTS, ...rule });
   }
 
@@ -219,14 +200,21 @@
     const panel = document.createElement('section');
     panel.className = 'panel';
     panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-label', 'Manage Page Watch settings');
+    panel.setAttribute('aria-label', 'Manage Reload Until settings');
+    /**
+     * @template {keyof HTMLElementTagNameMap} K
+     * @param {K} tag
+     * @param {string} [text]
+     * @param {HTMLElement} [parent]
+     * @returns {HTMLElementTagNameMap[K]}
+     */
     function add(tag, text, parent = panel) {
       const el = document.createElement(tag);
       if (text !== undefined) el.textContent = text;
       parent.append(el);
       return el;
     }
-    add('h2', 'Page Watch settings');
+    add('h2', 'Reload Until settings');
     add(
       'p',
       'Save one watch per URL. Refreshing is suspended in this tab while this panel is open.',
@@ -245,13 +233,20 @@
       event.preventDefault();
       saveFromForm();
     });
+    /** @type {Record<string, HTMLInputElement>} */
     const fields = {};
+    /**
+     * @param {string} name
+     * @param {string} label
+     * @param {string} [type]
+     * @param {string} [help]
+     * @param {HTMLElement} [parent]
+     * @param {string[][] | null} [choices]
+     */
     function field(name, label, type = 'text', help = '', parent = form, choices = null) {
       const wrapper = add('label', type === 'checkbox' ? undefined : label, parent);
-      const input = add(
-        choices ? 'select' : type === 'textarea' ? 'textarea' : 'input',
-        undefined,
-        wrapper,
+      const input = /** @type {HTMLInputElement} */ (
+        add(choices ? 'select' : type === 'textarea' ? 'textarea' : 'input', undefined, wrapper)
       );
       input.name = name;
       if (!choices && type !== 'textarea') input.type = type;
@@ -301,13 +296,6 @@
     field('settleSeconds', 'Initial rendering wait (seconds)', 'number', '', advanced);
     field('confirmSeconds', 'Condition confirmation time (seconds)', 'number', '', advanced);
     field(
-      'alertOnRedirect',
-      'Alert when this tab leaves the watched URL',
-      'checkbox',
-      'Stops monitoring and requires acknowledgement on another URL, including login redirects or manual navigation. Disable the watch before intentionally leaving. Works across HTTP/HTTPS pages where this script is allowed to run.',
-      advanced,
-    );
-    field(
       'readySelector',
       'Page-ready CSS selector (optional)',
       'text',
@@ -333,7 +321,7 @@
     field('desktopNotification', 'Desktop notification', 'checkbox', '', advanced);
     field('notificationBackend', 'Notification method', 'text', '', advanced, [
       ['auto', 'Native browser notification + automatic fallback'],
-      ['tampermonkey', 'Tampermonkey only'],
+      ['manager', 'Userscript manager only'],
     ]);
     const permissionStatus = add('small', '', advanced);
     const permissionButton = add('button', 'Allow native notifications', advanced);
@@ -352,10 +340,10 @@
         : permission === 'granted'
           ? 'Native notification permission granted for this site. Use Test alert after saving.'
           : permission === 'denied'
-            ? 'Native notifications are blocked. Change this site’s browser permissions, then reopen Settings. Tampermonkey fallback remains available.'
+            ? 'Native notifications are blocked. Change this site’s browser permissions, then reopen Settings. Your userscript manager’s notification remains available.'
             : permission === 'unavailable'
-              ? 'Native notifications are unavailable here. Tampermonkey fallback will be used.'
-              : 'Click Allow native notifications for this site. Until allowed, Tampermonkey fallback will be used.';
+              ? 'Native notifications are unavailable here. Your userscript manager’s notification will be used.'
+              : 'Click Allow native notifications for this site. Until allowed, your userscript manager’s notification will be used.';
       permissionButton.disabled = !sameOrigin() || permission !== 'default';
     }
     permissionButton.addEventListener('click', () => {
@@ -366,7 +354,7 @@
       // Call immediately inside the real click handler (required by Firefox).
       try {
         permissionButton.disabled = true;
-        nativeAPI()
+        /** @type {typeof Notification} */ (nativeAPI())
           .requestPermission()
           .then(showPermission, () => {
             showPermission();
@@ -387,7 +375,7 @@
     volume.step = '0.05';
     add(
       'p',
-      'Allow audio autoplay for the site. Chromium/Linux may display persistent native notifications as critical; Firefox can keep normal urgency. If Firefox reports persistence unsupported, check dom.webnotifications.requireinteraction.enabled in about:config. Reminders and the page alert continue until Acknowledge; Do Not Disturb remains desktop-controlled.',
+      'Allow audio autoplay for the site. Chromium/Linux may display persistent native notifications as critical; Firefox can keep normal urgency. Reminders and the page alert continue until Acknowledge; Do Not Disturb remains desktop-controlled.',
       advanced,
     );
     const error = add('div');
@@ -395,6 +383,10 @@
     error.setAttribute('role', 'alert');
     const actions = add('div');
     actions.className = 'actions';
+    /**
+     * @param {string} label
+     * @param {() => void} fn
+     */
     function action(label, fn) {
       const b = add('button', label, actions);
       b.type = 'button';
@@ -414,17 +406,24 @@
         writeRules(rules);
         close();
       } catch (e) {
-        error.textContent = e.message;
+        error.textContent = /** @type {Error} */ (e).message;
       }
     });
     action('Close', close);
     let editingURL = '';
+    /** @param {string} url */
     function fill(url) {
       editingURL = url;
-      const rule = { ...DEFAULTS, url: currentURL(), ...(readRules()[url] || {}) };
+      const saved = /** @type {Rule | undefined} */ (readRules()[url]);
+      const rule = /** @type {Record<string, unknown>} */ ({
+        ...DEFAULTS,
+        url: currentURL(),
+        ...saved,
+      });
+      const defaults = /** @type {Record<string, unknown>} */ (DEFAULTS);
       for (const [name, input] of Object.entries(fields)) {
         if (input.type === 'checkbox') input.checked = Boolean(rule[name]);
-        else input.value = String(rule[name] ?? DEFAULTS[name] ?? '');
+        else input.value = String(rule[name] ?? defaults[name] ?? '');
       }
       showPermission();
       remove.disabled = !url;
@@ -437,15 +436,16 @@
           throw new Error(
             'Close settings and Acknowledge the active alert before editing this watch.',
           );
-        const rule = { ...DEFAULTS };
+        const draft = /** @type {Record<string, unknown>} */ ({ ...DEFAULTS });
         for (const [name, input] of Object.entries(fields)) {
-          rule[name] =
+          draft[name] =
             input.type === 'checkbox'
               ? input.checked
               : input.type === 'number'
                 ? Number(input.value)
                 : input.value;
         }
+        const rule = /** @type {Rule} */ (draft);
         rule.url = normalizeURL(rule.url.trim());
         rule.selector = rule.selector.trim();
         rule.readySelector = rule.readySelector.trim();
@@ -461,7 +461,7 @@
         writeRules(rules);
         close();
       } catch (e) {
-        error.textContent = 'Could not save: ' + e.message;
+        error.textContent = 'Could not save: ' + /** @type {Error} */ (e).message;
       }
     }
     function close() {
@@ -481,16 +481,10 @@
   function followNavigation() {
     if (currentURL() === lastURL) return;
     lastURL = currentURL();
-    checkDestination();
     if (!editor) boot();
   }
-  function initialize(tab) {
-    tabState = tab || {};
-    // GM tab state survives document reloads and cross-origin redirects, but is
-    // isolated from independent browser tabs (unlike global saved watch settings).
-    if (GM_getValue(STORAGE, null) === null) writeRules({ [PRESET.url]: PRESET });
-    checkDestination();
-    GM_registerMenuCommand('Page Watch: Manage watches', openManager);
+  function initialize() {
+    GM_registerMenuCommand('Reload Until: Manage watches', openManager);
     GM_addValueChangeListener(STORAGE, () => {
       const next = signature(readRules());
       if (next !== currentSignature) {
@@ -499,8 +493,7 @@
         else {
           if (runner) runner.destroy();
           runner = null;
-          const rules = readRules();
-          const rule = rules[displayedRuleURL(rules)];
+          const rule = readRules()[currentURL()];
           if (rule?.pendingAlert) runner = runWatch({ ...DEFAULTS, ...rule, enabled: false });
         }
       }
@@ -511,24 +504,32 @@
     boot();
   }
 
+  /**
+   * @param {Rule} CONFIG
+   * @returns {Runner}
+   */
   function runWatch(CONFIG) {
     const originalTitle = document.title;
     let running = false;
-    let lifecycle = 0;
-    let timer = null;
+    /** @type {ReturnType<typeof setInterval> | undefined} */
+    let timer = undefined;
     let startedAt = 0;
     let candidateSince = null;
-    let alarmTimer = null;
-    let notificationTimer = null;
+    /** @type {ReturnType<typeof setInterval> | undefined} */
+    let alarmTimer = undefined;
+    /** @type {ReturnType<typeof setInterval> | undefined} */
+    let notificationTimer = undefined;
+    /** @type {{ notification: Notification; listeners: AbortController } | null} */
     let nativeNotification = null;
     let notificationGeneration = 0;
     let nativeFailed = false;
     let alarmActive = false;
+    /** @type {AudioContext | null} */
     let audio = null;
 
     // Shadow DOM keeps our notification text out of the watched page text.
     const host = document.createElement('div');
-    host.id = 'page-watch';
+    host.id = 'reload-until';
     host.style.cssText =
       'position:fixed;right:12px;bottom:12px;z-index:2147483647;max-width:360px;';
     const root = host.attachShadow({ mode: 'open' });
@@ -545,6 +546,10 @@
     notice.style.cssText = 'margin-top:6px;white-space:pre-wrap;';
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;';
+    /**
+     * @param {string} label
+     * @param {() => void} action
+     */
     function button(label, action) {
       const element = document.createElement('button');
       element.textContent = label;
@@ -565,6 +570,7 @@
     root.append(box);
     document.documentElement.append(host);
 
+    /** @param {string} state */
     function save(state) {
       try {
         CONFIG.enabled = state === 'running';
@@ -579,31 +585,32 @@
     }
 
     function stopTimers() {
-      lifecycle++;
       running = false;
       clearInterval(timer);
-      timer = null;
+      timer = undefined;
       candidateSince = null;
       toggle.textContent = 'Enable';
       if (!alarmActive) document.title = originalTitle;
     }
 
+    /** @param {string} countdown */
     function watchedTitle(countdown) {
       if (!alarmActive) document.title = '👁 WATCHING [' + countdown + '] — ' + originalTitle;
     }
 
+    /** @param {string} message */
     function pause(message) {
       stopTimers();
       silence();
       status.textContent = message;
       save('paused');
-      forgetWatch(CONFIG.url);
     }
 
     function validate() {
       validateRule(CONFIG);
     }
 
+    /** @param {string} text */
     function normalizeText(text) {
       const result = text.replace(/\s+/g, ' ').trim();
       return CONFIG.caseSensitive ? result : result.toLowerCase();
@@ -670,7 +677,7 @@
           location.reload();
         }
       } catch (error) {
-        pause('Paused: configuration/page error — ' + error.message);
+        pause('Paused: configuration/page error — ' + /** @type {Error} */ (error).message);
       }
     }
 
@@ -688,7 +695,7 @@
       try {
         validate();
       } catch (error) {
-        pause('Paused: invalid configuration — ' + error.message);
+        pause('Paused: invalid configuration — ' + /** @type {Error} */ (error).message);
         return;
       }
       if (!save('running')) return;
@@ -696,23 +703,17 @@
       toggle.textContent = 'Disable';
       startedAt = performance.now();
       candidateSince = null;
-      const generation = lifecycle;
       status.textContent = 'Starting watch…';
-      trackWatch(
-        CONFIG.url,
-        () => {
-          if (!running || generation !== lifecycle) return;
-          timer = setInterval(tick, 250);
-          tick();
-        },
-        (error) => pause('Paused: could not save tab tracking — ' + error.message),
-      );
+      timer = setInterval(tick, 250);
+      tick();
     }
 
     function beep() {
       if (!CONFIG.sound || !alarmActive) return;
       try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const AudioContext = /** @type {typeof window.AudioContext} */ (
+          window.AudioContext || /** @type {LegacyAudioWindow} */ (window).webkitAudioContext
+        );
         audio ??= new AudioContext();
         if (audio.state !== 'running') {
           audio.resume().catch(() => {});
@@ -733,24 +734,26 @@
         gain.gain.linearRampToValueAtTime(CONFIG.volume, now + 0.02);
         gain.gain.setValueAtTime(CONFIG.volume, now + 0.4);
         gain.gain.linearRampToValueAtTime(0, now + 0.5);
-        oscillator.onended = () => {
+        oscillator.addEventListener('ended', () => {
           oscillator.disconnect();
           gain.disconnect();
-        };
+        });
         oscillator.start(now);
         oscillator.stop(now + 0.5);
       } catch (error) {
-        notice.textContent = '⚠ ' + alarmMessage + '\nSound unavailable: ' + error.message;
+        notice.textContent =
+          '⚠ ' + alarmMessage + '\nSound unavailable: ' + /** @type {Error} */ (error).message;
       }
     }
 
     let alarmMessage = '';
+    /** @param {boolean} test */
     function alertUser(test) {
       silence();
       alarmActive = true;
       const persistent = Boolean(CONFIG.pendingAlert) || CONFIG.requireExplicitDismissal;
       const title = test
-        ? 'Page Watch — TEST'
+        ? 'Reload Until — TEST'
         : CONFIG.pendingAlert?.title || CONFIG.notificationTitle;
       alarmMessage = test
         ? 'Test alert — monitoring state is unchanged.'
@@ -766,18 +769,20 @@
         if (!alarmActive || !CONFIG.desktopNotification) return;
         const generation = ++notificationGeneration;
         const text = alarmMessage + (persistent ? ' — Open the page and click Acknowledge.' : '');
-        const tag = 'page-watch-' + normalizeURL(CONFIG.url);
+        const tag = 'reload-until-' + normalizeURL(CONFIG.url);
         const click = () => {
           if (!alarmActive || generation !== notificationGeneration) return;
           window.focus();
           // Native close events may be timeouts or replacements: never acknowledge them.
           if (!persistent) acknowledgeAlert();
         };
+        /** @param {string} reason */
         function fallback(reason) {
           if (!alarmActive || generation !== notificationGeneration) return;
-          deliveryStatus.textContent = reason + ' Using Tampermonkey notification.';
+          deliveryStatus.textContent = reason + ' Using your userscript manager’s notification.';
           try {
-            GM_notification({
+            /** @type {VMScriptGMNotificationOptions & { highlight: boolean; timeout: number }} */
+            const options = {
               title,
               text,
               tag,
@@ -785,13 +790,16 @@
               silent: false,
               timeout: persistent ? 0 : 10000,
               onclick: click,
-            });
+            };
+            GM_notification(options);
           } catch (error) {
             deliveryStatus.textContent =
-              'Desktop delivery failed: ' + error.message + '. The page alert remains active.';
+              'Desktop delivery failed: ' +
+              /** @type {Error} */ (error).message +
+              '. The page alert remains active.';
           }
         }
-        if (CONFIG.notificationBackend === 'tampermonkey') {
+        if (CONFIG.notificationBackend === 'manager') {
           fallback('');
           return;
         }
@@ -806,24 +814,31 @@
         }
         try {
           closeNativeNotification();
-          const notification = new Native(title, {
+          /** @type {NotificationOptions & { renotify: boolean }} */
+          const options = {
             body: text,
             tag,
             requireInteraction: persistent,
             renotify: persistent,
             silent: false,
-          });
-          nativeNotification = notification;
-          notification.onclick = click;
-          notification.onerror = () => {
-            if (!alarmActive || generation !== notificationGeneration || nativeFailed) return;
-            nativeFailed = true;
-            closeNativeNotification();
-            fallback('Native delivery failed.');
           };
+          const notification = new Native(title, options);
+          const listeners = new AbortController();
+          nativeNotification = { notification, listeners };
+          notification.addEventListener('click', click, { signal: listeners.signal });
+          notification.addEventListener(
+            'error',
+            () => {
+              if (!alarmActive || generation !== notificationGeneration || nativeFailed) return;
+              nativeFailed = true;
+              closeNativeNotification();
+              fallback('Native delivery failed.');
+            },
+            { signal: listeners.signal },
+          );
           deliveryStatus.textContent =
             persistent && notification.requireInteraction !== true
-              ? 'Native notification sent; browser did not confirm persistence. Repeating reminders remain active. In Firefox, check dom.webnotifications.requireinteraction.enabled.'
+              ? 'Native notification sent; browser did not confirm persistence. Repeating reminders remain active.'
               : 'Native notification sent' +
                 (persistent
                   ? ' with persistence requested. Repeating reminders remain active.'
@@ -849,9 +864,9 @@
           const latest = readRules()[CONFIG.url];
           if (latest) saveRule({ ...latest, pendingAlert: null });
           CONFIG.pendingAlert = null;
-          forgetWatch(CONFIG.url);
         } catch (error) {
-          notice.textContent += '\nCould not save acknowledgement; try again: ' + error.message;
+          notice.textContent +=
+            '\nCould not save acknowledgement; try again: ' + /** @type {Error} */ (error).message;
           return;
         }
       }
@@ -860,11 +875,10 @@
 
     function closeNativeNotification() {
       if (!nativeNotification) return;
-      const notification = nativeNotification;
+      const { notification, listeners } = nativeNotification;
       nativeNotification = null;
       try {
-        notification.onclick = null;
-        notification.onerror = null;
+        listeners.abort();
         notification.close();
       } catch {
         /* A closed or unavailable native notification needs no cleanup. */
@@ -877,9 +891,9 @@
       closeNativeNotification();
       deliveryStatus.textContent = '';
       clearInterval(alarmTimer);
-      alarmTimer = null;
+      alarmTimer = undefined;
       clearInterval(notificationTimer);
-      notificationTimer = null;
+      notificationTimer = undefined;
       if (audio && audio.state === 'running') audio.suspend().catch(() => {});
       notice.textContent = '';
       acknowledgeButton.hidden = true;
@@ -909,5 +923,5 @@
       },
     };
   }
-  GM_getTab(initialize);
+  initialize();
 })();

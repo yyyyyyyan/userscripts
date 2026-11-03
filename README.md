@@ -9,6 +9,7 @@ as it is released.
 | Script | What it does | Where it runs | Install |
 |---|---|---|---|
 | [Per-Site Light/Dark Mode](scripts/per-site-light-dark-mode/README.md) | Asks each site for its own light or dark theme, remembered per site. | Every website | [Install][per-site] |
+| [Reload Until](scripts/reload-until/README.md) | Reloads a page until something appears or disappears, then raises an alarm. | Every website | Coming soon |
 
 Later scripts get a row in this table when they are released.
 

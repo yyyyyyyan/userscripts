@@ -16,6 +16,7 @@ sends over the network.
 | Script | What it stores | Where | Network requests | Runs on |
 |---|---|---|---|---|
 | Per-Site Light/Dark Mode | One choice per site (light, dark or browser default). | In your userscript manager's storage on your device. | None. | Every website, because you can pick any site. It does nothing on a site until you choose. |
+| Reload Until | Your watches: page address, what to look for, timing and alarm settings. | In your userscript manager's storage on your device. | None. | Every website, because you can watch any page. It does nothing on a page without a watch. |
 
 Each script has a row here. Each script's README repeats its row under
 **Privacy**.
