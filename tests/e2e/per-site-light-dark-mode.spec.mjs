@@ -186,6 +186,16 @@ test('CSS media rules follow the saved choice in both directions', async () => {
   });
 });
 
+test('Browser default undoes a saved choice', async () => {
+  await withSite(await fixture('media-rule.html'), async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    await expect.poll(() => backgroundOf(page)).toBe(BLACK);
+    await choose(vm.context, vm.extensionId, page, 'Browser default for');
+    await expect.poll(() => backgroundOf(page)).toBe(WHITE);
+  });
+});
+
 test('styles inside an open shadow root follow the choice', async () => {
   const read = (/** @type {Page} */ page) =>
     page.evaluate(() => {
