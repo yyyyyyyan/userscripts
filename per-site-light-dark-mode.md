@@ -8,8 +8,10 @@ sites that don't have one.
 ![Python's documentation twice, side by side. On the left the page is light, with your browser in light and no choice saved. On the right the same page is dark after selecting Dark for the site.](images/per-site-light-dark-mode/before-after.png)
 
 It helps on sites that have both a light and a dark theme and follow your
-browser's setting. Tested on react.dev, developer.mozilla.org, github.com,
-docs.python.org, w3.org and wiki.archlinux.org.
+browser's setting, such as developer.mozilla.org, docs.python.org and
+wiki.archlinux.org. Some sites, such as react.dev, pick their theme the moment
+they start loading. Those need a setting in your userscript manager, described
+under Limitations below.
 
 ## How to use
 
@@ -81,9 +83,11 @@ network requests.
 - It can't read some style sheets that a site loads from another web address
   without allowing access. Parts of the page that depend on them may not switch.
   **Status** may mention them.
-- A page that checks your theme very early, before the script runs, may keep
-  your browser's setting. **Status** may say so. Reloading the page or setting
-  the site's own theme to System or Automatic may help.
+- Some sites, such as react.dev, check your theme the moment they start
+  loading, before the script runs, and keep your browser's setting. **Status**
+  says so. To make the script run first, turn on **Synchronous page mode** in
+  Violentmonkey's advanced settings, or set Tampermonkey's injection mode to
+  **Instant**. Then reload the page.
 - A site that saves your theme with your account, or in its own button, decides
   for itself. The script does not override it.
 - It can't reach parts of some pages built as sealed components before it

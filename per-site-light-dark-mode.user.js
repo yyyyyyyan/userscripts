@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Per-Site Light/Dark Mode
 // @namespace     yyyyyyyan/per-site-light-dark-mode
-// @version       1.0.0
+// @version       1.0.1
 // @description   Makes each site use its own light or dark theme, remembered per site, without generating colors.
 // @author        yyyyyyyan
 // @license       GPL-3.0-or-later
@@ -157,7 +157,10 @@
     );
   }
 
-  /** @returns {string[]} Two to four plain sentences. */
+  const EARLY_INJECTION =
+    "To make the script run first, turn on Synchronous page mode in Violentmonkey's advanced settings, or set Tampermonkey's injection mode to Instant, then reload the page.";
+
+  /** @returns {string[]} Plain sentences, the most useful first. */
   function describeStatus() {
     const browser = nativeMatchMedia.call(page, '(prefers-color-scheme: dark)').matches
       ? 'dark'
@@ -190,21 +193,33 @@
       lines.push(
         `The script could not answer this page's theme checks: ${status.javascriptError.replace(/[.\s]+$/, '')}.`,
       );
-    } else if (status.mediaConditions > 0 || status.pageQueries > 0 || everPinned) {
+    } else if (status.mediaConditions > 0 || everPinned) {
       lines.push(
-        status.mediaConditions > 0 || status.pageQueries > 0
+        status.mediaConditions > 0
           ? `It applied: this page asked which theme you prefer and was told ${mode}.`
           : `It applied: the script set this page's color scheme to ${mode}.`,
       );
       if (injectedAt.scripts > 0) {
         lines.push(
-          "If parts of this page still show your browser's setting, the page probably checked its theme before the script loaded; reload the page, or set the site's own theme to System or Automatic.",
+          `If parts of this page still show your browser's setting, the page probably checked its theme before the script loaded. ${EARLY_INJECTION}`,
+        );
+      }
+    } else if (status.pageQueries > 0) {
+      lines.push(`This page asked which theme you prefer and was told ${mode}.`);
+      if (injectedAt.scripts > 0) {
+        lines.push(
+          `If it still shows your browser's setting, it probably checked its theme before the script loaded. ${EARLY_INJECTION}`,
+        );
+      }
+      if (blockedSheets.size === 0) {
+        lines.push(
+          `Its style sheets have no ${mode} rules the script could switch, so whether it changes is up to its own scripts.`,
         );
       }
     } else if (injectedAt.scripts > 0) {
       lines.push(
         "This page may have checked its theme before the script could run, so it may still show your browser's setting.",
-        "Reload the page, or set the site's own theme to System or Automatic.",
+        EARLY_INJECTION,
       );
     } else {
       lines.push(
@@ -233,7 +248,7 @@
         `The site has set its own ${siteScheme} color scheme, for example from its own theme switch, and the script leaves that alone.`,
       );
     }
-    return lines.slice(0, 4);
+    return lines;
   }
 
   GM_registerMenuCommand('Status', () => {
