@@ -872,6 +872,8 @@ test('status explains an early theme check in plain sentences', async () => {
     expect(status.trimStart().startsWith('{')).toBe(false);
     expect(status).toContain('Dark is saved for 127.0.0.1.');
     expect(status).toContain(EARLY_WARNING);
+    expect(status).toContain('Synchronous page mode');
+    expect(status).toContain('injection mode to Instant');
     expect(sentences(status).length).toBeGreaterThanOrEqual(2);
     expect(sentences(status).length).toBeLessThanOrEqual(4);
   });
@@ -910,9 +912,8 @@ test('an unrelated script that ran first does not hide that the page asked later
     await choose(vm.context, vm.extensionId, page, 'Dark for');
     expect(await schemeReadByPage(page)).toBe('dark');
     const status = await readStatus(vm, page);
-    expect(status).toContain(
-      'It applied: this page asked which theme you prefer and was told dark.',
-    );
+    expect(status).toContain('This page asked which theme you prefer and was told dark.');
+    expect(status).not.toContain('It applied');
     expect(status).not.toContain(EARLY_WARNING);
   });
 });
@@ -933,7 +934,7 @@ test('a script still waiting to download does not count as having run', async ()
     await choose(vm.context, vm.extensionId, page, 'Dark for');
     expect(await schemeReadByPage(page)).toBe('dark');
     expect(await readStatus(vm, page)).toBe(
-      'Dark is saved for 127.0.0.1. It applied: this page asked which theme you prefer and was told dark.',
+      'Dark is saved for 127.0.0.1. This page asked which theme you prefer and was told dark. Its style sheets have no dark rules the script could switch, so whether it changes is up to its own scripts.',
     );
   });
 });
