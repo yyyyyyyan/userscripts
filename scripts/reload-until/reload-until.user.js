@@ -58,6 +58,16 @@
    * @property {PendingAlert | null} pendingAlert
    */
 
+  /**
+   * Written just before the script reloads a watched page, and cleared by the page the reload
+   * ends on.
+   * @typedef {object} Handoff
+   * @property {string} watchUrl
+   * @property {string} fromUrl
+   * @property {number} at
+   * @property {string} nonce
+   */
+
   /** @typedef {Window & { webkitAudioContext?: typeof AudioContext }} LegacyAudioWindow */
 
   /**
@@ -70,6 +80,11 @@
   const SCHEMA_VERSION = 1;
   const MIN_INTERVAL_SECONDS = 10;
   const WATCH_PREFIX = 'watch:';
+  const HANDOFF_KEY = 'handoff';
+  const SESSION_HANDOFF_KEY = 'reload-until:handoff';
+  const SESSION_ALARM_KEY = 'reload-until:alarm';
+  const HANDOFF_LIFETIME_MS = 20_000;
+  const HANDOFF_START_SLACK_MS = 2000;
   const MAX_SECONDS = 86400;
   /** @type {Omit<Watch, 'url'>} */
   const DEFAULTS = {
@@ -124,6 +139,180 @@
     return url.href;
   }
   const currentUrl = () => normalizeUrl(location.href);
+
+  /**
+   * @param {string} a
+   * @param {string} b
+   */
+  function sameOrigin(a, b) {
+    return new URL(a).origin === new URL(b).origin;
+  }
+
+  /**
+   * @param {string} key
+   * @returns {string | null | undefined} Undefined when the page blocks session storage.
+   */
+  function sessionGet(key) {
+    try {
+      return sessionStorage.getItem(key);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * @param {string} key
+   * @param {string | null} value Null removes the key.
+   */
+  function sessionSet(key, value) {
+    try {
+      if (value === null) sessionStorage.removeItem(key);
+      else sessionStorage.setItem(key, value);
+    } catch {
+      /* Without session storage, only the shared handoff record is used. */
+    }
+  }
+
+  function randomNonce() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+  }
+
+  /**
+   * Records which watched page is about to reload, so the page the reload ends on can tell a
+   * redirect from a successful reload. Session storage covers redirects within the watched site
+   * in this tab; the shared record covers redirects to another site.
+   * @param {string} watchUrl
+   */
+  function writeHandoff(watchUrl) {
+    /** @type {Handoff} */
+    const handoff = {
+      watchUrl,
+      fromUrl: currentUrl() ?? watchUrl,
+      at: Date.now(),
+      nonce: randomNonce(),
+    };
+    sessionSet(SESSION_HANDOFF_KEY, JSON.stringify(handoff));
+    GM_setValue(HANDOFF_KEY, handoff);
+  }
+
+  /**
+   * Both Chromium and Firefox report a reload that a server redirected as a reload, so a page
+   * the user opened any other way can't be where one of the script's reloads ended.
+   */
+  function loadedByReload() {
+    const [entry] = /** @type {PerformanceNavigationTiming[]} */ (
+      performance.getEntriesByType('navigation')
+    );
+    return !entry || entry.type === 'reload';
+  }
+
+  /**
+   * A record is this page's only if it is recent and this page's navigation started when the
+   * record was written. Navigation start is taken from the wall clock now, because
+   * `performance.timeOrigin` can drift from `Date.now()` in a long-lived browser process.
+   * @param {unknown} value
+   * @returns {value is Handoff}
+   */
+  function isOwnHandoff(value) {
+    if (typeof value !== 'object' || value === null) return false;
+    const { watchUrl, at, nonce } = /** @type {Partial<Handoff>} */ (value);
+    if (typeof watchUrl !== 'string' || typeof nonce !== 'string' || typeof at !== 'number')
+      return false;
+    const now = Date.now();
+    const navigationStart = now - performance.now();
+    return (
+      now - at < HANDOFF_LIFETIME_MS && Math.abs(navigationStart - at) <= HANDOFF_START_SLACK_MS
+    );
+  }
+
+  /** @param {string | null | undefined} raw */
+  function parseHandoff(raw) {
+    try {
+      return raw ? /** @type {unknown} */ (JSON.parse(raw)) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @type {string | null} The watch whose pending alarm this document shows away from its URL. */
+  let awayAlarmUrl = null;
+
+  /**
+   * Runs once per document load: finds out whether this page is where one of the script's own
+   * reloads ended, clears the handoff record if so, and raises the redirect alarm when the
+   * reload ended somewhere other than the watched URL.
+   * @param {string} url The current normalized URL.
+   */
+  function claimHandoff(url) {
+    if (!loadedByReload()) return;
+    const raw = sessionGet(SESSION_HANDOFF_KEY);
+    if (raw) {
+      sessionSet(SESSION_HANDOFF_KEY, null);
+      const local = parseHandoff(raw);
+      if (isOwnHandoff(local)) {
+        const shared = /** @type {Handoff | null} */ (GM_getValue(HANDOFF_KEY, null));
+        if (shared?.nonce === local.nonce) GM_deleteValue(HANDOFF_KEY);
+        if (local.watchUrl !== url) raiseRedirectAlarm(local.watchUrl, url);
+        return;
+      }
+    }
+    const shared = /** @type {unknown} */ (GM_getValue(HANDOFF_KEY, null));
+    if (!isOwnHandoff(shared)) return;
+    if (shared.watchUrl === url) {
+      GM_deleteValue(HANDOFF_KEY);
+      return;
+    }
+    // A redirect within the watched site would have left this tab's own session record, so a
+    // same-site page without one belongs to another tab.
+    if (raw !== undefined && sameOrigin(shared.watchUrl, url)) return;
+    GM_deleteValue(HANDOFF_KEY);
+    raiseRedirectAlarm(shared.watchUrl, url);
+  }
+
+  /**
+   * @param {string} watchUrl
+   * @param {string} landedUrl
+   */
+  function raiseRedirectAlarm(watchUrl, landedUrl) {
+    const watch = readWatch(watchUrl);
+    if (!watch) return;
+    if (!watch.pendingAlert)
+      updateWatch(watchUrl, {
+        enabled: false,
+        pendingAlert: { kind: 'redirect', at: Date.now(), landedUrl },
+      });
+    awayAlarmUrl = watchUrl;
+  }
+
+  /**
+   * Keeps a shown alarm with this tab when it moves to another page. Session storage is only
+   * written on the watched site itself, so another site never receives the watched URL.
+   * @param {string} watchUrl
+   */
+  function rememberAlarm(watchUrl) {
+    awayAlarmUrl = watchUrl;
+    if (sameOrigin(watchUrl, location.href) && sessionGet(SESSION_ALARM_KEY) !== watchUrl)
+      sessionSet(SESSION_ALARM_KEY, watchUrl);
+  }
+
+  /** @param {string} watchUrl */
+  function forgetAlarm(watchUrl) {
+    if (awayAlarmUrl === watchUrl) awayAlarmUrl = null;
+    if (sessionGet(SESSION_ALARM_KEY) === watchUrl) sessionSet(SESSION_ALARM_KEY, null);
+  }
+
+  /** @returns {Watch | null} A watch with a pending alarm that this tab is showing. */
+  function findAwayAlarm() {
+    for (const candidate of [awayAlarmUrl, sessionGet(SESSION_ALARM_KEY)]) {
+      if (!candidate) continue;
+      const watch = readWatch(candidate);
+      if (watch?.pendingAlert) return watch;
+      forgetAlarm(candidate);
+    }
+    return null;
+  }
 
   /**
    * @param {string} url
@@ -265,15 +454,36 @@
   /** @type {Set<string>} */
   const listenedUrls = new Set();
 
+  /** @type {string | null} The watch the widget shows, here or away from its URL. */
+  let shownUrl = null;
+
   function boot() {
     if (runner) runner.destroy();
     runner = null;
+    shownUrl = null;
     const url = currentUrl();
     lastUrl = url;
     const watch = url === null ? null : readWatch(url);
-    if (url === null || !watch) return;
-    followWatchedPage(url);
-    if (!editor) runner = runWatch(watch);
+    if (url !== null && watch) {
+      followWatchedPage(url);
+      shownUrl = url;
+      if (!editor) runner = runWatch(watch);
+      return;
+    }
+    const away = findAwayAlarm();
+    if (!away) return;
+    listenTo(away.url);
+    shownUrl = away.url;
+    if (!editor) runner = runWatch({ ...away, enabled: false });
+  }
+
+  /** @param {string} url */
+  function listenTo(url) {
+    if (listenedUrls.has(url)) return;
+    listenedUrls.add(url);
+    GM_addValueChangeListener(WATCH_PREFIX + url, (_name, _oldValue, _newValue, remote) => {
+      if (remote && (currentUrl() === url || shownUrl === url)) applyRemoteChange(url);
+    });
   }
 
   /**
@@ -281,12 +491,7 @@
    * @param {string} url
    */
   function followWatchedPage(url) {
-    if (!listenedUrls.has(url)) {
-      listenedUrls.add(url);
-      GM_addValueChangeListener(WATCH_PREFIX + url, (_name, _oldValue, _newValue, remote) => {
-        if (remote && currentUrl() === url) applyRemoteChange(url);
-      });
-    }
+    listenTo(url);
     if (followingNavigation) return;
     followingNavigation = true;
     window.addEventListener('popstate', followNavigation);
@@ -471,7 +676,7 @@
     const permissionStatus = add('small', '', advanced);
     const permissionButton = add('button', 'Allow native notifications', advanced);
     permissionButton.type = 'button';
-    function sameOrigin() {
+    function editingThisSite() {
       try {
         return new URL(fields.url.value).origin === new URL(location.href).origin;
       } catch {
@@ -480,7 +685,7 @@
     }
     function showPermission() {
       const permission = nativePermission();
-      permissionStatus.textContent = !sameOrigin()
+      permissionStatus.textContent = !editingThisSite()
         ? 'Open the watch’s site to grant native notification permission there.'
         : permission === 'granted'
           ? 'Native notification permission granted for this site. Use Test alert after saving.'
@@ -489,10 +694,10 @@
             : permission === 'unavailable'
               ? 'Native notifications are unavailable here. Your userscript manager’s notification will be used.'
               : 'Click Allow native notifications for this site. Until allowed, your userscript manager’s notification will be used.';
-      permissionButton.disabled = !sameOrigin() || permission !== 'default';
+      permissionButton.disabled = !editingThisSite() || permission !== 'default';
     }
     permissionButton.addEventListener('click', () => {
-      if (!sameOrigin() || nativePermission() !== 'default') {
+      if (!editingThisSite() || nativePermission() !== 'default') {
         showPermission();
         return;
       }
@@ -651,6 +856,8 @@
 
   function initialize() {
     GM_registerMenuCommand('Reload Until: Manage watches', openManager);
+    const url = currentUrl();
+    if (url !== null) claimHandoff(url);
     boot();
   }
 
@@ -660,6 +867,10 @@
    */
   function runWatch(CONFIG) {
     const originalTitle = document.title;
+    /** @type {string | null} */
+    let ownTitle = null;
+    const away = currentUrl() !== CONFIG.url;
+    const watchedSite = sameOrigin(CONFIG.url, location.href);
     let running = false;
     /** @type {ReturnType<typeof setInterval> | undefined} */
     let timer = undefined;
@@ -716,9 +927,13 @@
       return element;
     }
     const toggle = button('Enable', () => (running ? pause('Paused') : start(true)));
-    if (currentUrl() !== CONFIG.url) button('Open watched page', () => location.assign(CONFIG.url));
-    button('Settings', openManager);
-    button('Test alert', () => alertUser(!CONFIG.pendingAlert));
+    if (away) {
+      toggle.hidden = true;
+      button('Open watched page', () => location.assign(CONFIG.url));
+    } else {
+      button('Settings', openManager);
+      button('Test alert', () => alertUser(!CONFIG.pendingAlert));
+    }
     const acknowledgeButton = button('Acknowledge', acknowledgeAlert);
     acknowledgeButton.hidden = true;
     box.append(status, notice, soundStatus, deliveryStatus, actions);
@@ -740,18 +955,46 @@
       }
     }
 
+    /** @param {string} title */
+    function setTitle(title) {
+      document.title = title;
+      ownTitle = document.title;
+    }
+
+    /** Puts the page's title back, unless the page has set its own title since. */
+    function restoreTitle() {
+      if (ownTitle !== null && document.title === ownTitle) document.title = originalTitle;
+      ownTitle = null;
+    }
+
     function stopTimers() {
       running = false;
       clearInterval(timer);
       timer = undefined;
       candidateSince = null;
       toggle.textContent = 'Enable';
-      if (!alarmActive) document.title = originalTitle;
+      if (!alarmActive) restoreTitle();
     }
 
     /** @param {string} countdown */
     function watchedTitle(countdown) {
-      if (!alarmActive) document.title = '👁 WATCHING [' + countdown + '] — ' + originalTitle;
+      if (!alarmActive) setTitle('👁 WATCHING [' + countdown + '] — ' + originalTitle);
+    }
+
+    /** What the alarm says. Another site only learns the watched host, never the full URL. */
+    function alarmText() {
+      if (CONFIG.pendingAlert?.kind !== 'redirect') return CONFIG.notificationText;
+      return watchedSite
+        ? 'Reloading ' + CONFIG.url + ' ended on a different page. You may need to sign in again.'
+        : 'Reloading a page on ' +
+            new URL(CONFIG.url).hostname +
+            ' ended on this site instead. You may need to sign in again.';
+    }
+
+    function stoppedStatus() {
+      return CONFIG.pendingAlert?.kind === 'redirect'
+        ? 'Stopped: a reload ended on a different page.'
+        : 'Stopped: condition met.';
     }
 
     /** @param {string} message */
@@ -814,6 +1057,7 @@
         if (remaining <= 0) {
           stopTimers();
           watchedTitle('reloading');
+          writeHandoff(CONFIG.url);
           location.reload();
         }
       } catch (error) {
@@ -890,20 +1134,26 @@
       silence();
       alarmActive = true;
       const persistent = Boolean(CONFIG.pendingAlert) || CONFIG.requireExplicitDismissal;
-      const title = test ? 'Reload Until — TEST' : CONFIG.notificationTitle;
-      alarmMessage = test ? 'Test alert — monitoring state is unchanged.' : CONFIG.notificationText;
+      if (!test && CONFIG.pendingAlert) rememberAlarm(CONFIG.url);
+      const title = test
+        ? 'Reload Until — TEST'
+        : CONFIG.pendingAlert?.kind === 'redirect'
+          ? 'Reload Until — reload ended on another page'
+          : CONFIG.notificationTitle;
+      alarmMessage = test ? 'Test alert — monitoring state is unchanged.' : alarmText();
       notice.textContent =
         '⚠ ' + alarmMessage + (persistent ? '\nClick Acknowledge to dismiss this alert.' : '');
       acknowledgeButton.hidden = false;
       box.style.borderColor = '#ff5252';
-      document.title =
-        '⚠ ' + (persistent ? 'ACKNOWLEDGE' : test ? 'TEST' : 'CHECK PAGE') + ' — ' + originalTitle;
+      setTitle(
+        '⚠ ' + (persistent ? 'ACKNOWLEDGE' : test ? 'TEST' : 'CHECK PAGE') + ' — ' + originalTitle,
+      );
       nativeFailed = false;
       function notifyDesktop() {
         if (!alarmActive || !CONFIG.desktopNotification) return;
         const generation = ++notificationGeneration;
         const text = alarmMessage + (persistent ? ' — Open the page and click Acknowledge.' : '');
-        const tag = 'reload-until-' + CONFIG.url;
+        const tag = 'reload-until-' + (watchedSite ? CONFIG.url : new URL(CONFIG.url).hostname);
         const click = () => {
           if (!alarmActive || generation !== notificationGeneration) return;
           window.focus();
@@ -994,6 +1244,7 @@
 
     function acknowledgeAlert() {
       if (CONFIG.pendingAlert) {
+        const stopped = stoppedStatus();
         try {
           updateWatch(CONFIG.url, { pendingAlert: null });
           CONFIG.pendingAlert = null;
@@ -1002,9 +1253,11 @@
             '\nCould not save acknowledgement; try again: ' + /** @type {Error} */ (error).message;
           return;
         }
-        status.textContent = 'Stopped: condition met. Enable to watch again.';
+        forgetAlarm(CONFIG.url);
+        status.textContent = stopped + ' Enable to watch again.';
       }
       silence();
+      if (away) boot();
     }
 
     function closeNativeNotification() {
@@ -1033,11 +1286,11 @@
       notice.textContent = '';
       acknowledgeButton.hidden = true;
       box.style.borderColor = '#7f8c8d';
-      document.title = originalTitle;
+      restoreTitle();
     }
 
     if (CONFIG.pendingAlert) {
-      status.textContent = 'Stopped: condition met. An alert is waiting for you to acknowledge it.';
+      status.textContent = stoppedStatus() + ' An alert is waiting for you to acknowledge it.';
       alertUser(false);
     } else if (CONFIG.enabled) start(false);
     else status.textContent = 'Disabled. Enable to start watching.';

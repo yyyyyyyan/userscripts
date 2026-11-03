@@ -109,10 +109,12 @@ async function storedValues(vm) {
 }
 
 /**
- * Starts counting writes to the script's values in Violentmonkey's extension storage, which
- * keeps each script's values in one `val:<scriptId>` entry. Calling it again restarts the count.
+ * Starts counting changed values in Violentmonkey's extension storage, which keeps each
+ * script's values in one `val:<scriptId>` entry. The reload `handoff` is left out: every
+ * script-initiated reload writes it and the reloaded page clears it. Calling it again restarts
+ * the count.
  * @param {Vm} vm
- * @returns {Promise<() => Promise<number>>} Reads the number of writes since the call.
+ * @returns {Promise<() => Promise<number>>} Reads the number of changed values since the call.
  */
 async function countValueWrites(vm) {
   const [worker] = vm.context.serviceWorkers();
@@ -124,8 +126,20 @@ async function countValueWrites(vm) {
     const counter = { count: 0 };
     globalThis.reloadUntilWrites = counter;
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local') {
-        counter.count += Object.keys(changes).filter((key) => key.startsWith('val:')).length;
+      if (area !== 'local') {
+        return;
+      }
+      for (const [key, change] of Object.entries(changes)) {
+        if (!key.startsWith('val:')) {
+          continue;
+        }
+        const before = change.oldValue ?? {};
+        const after = change.newValue ?? {};
+        for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+          if (name !== 'handoff' && before[name] !== after[name]) {
+            counter.count += 1;
+          }
+        }
       }
     });
   });
@@ -145,11 +159,35 @@ function pendingAlertOf(stored, key) {
 }
 
 /**
+ * Waits until storage holds a redirect alarm on the watch and no leftover reload handoff.
+ * Violentmonkey writes values to extension storage shortly after the page does.
+ * @param {Vm} vm
+ * @param {string} watched
+ * @param {string} landedUrl
+ */
+async function expectRedirectStored(vm, watched, landedUrl) {
+  await expect
+    .poll(async () => {
+      const stored = await storedValues(vm);
+      return { pendingAlert: pendingAlertOf(stored, `watch:${watched}`), handoff: stored.handoff };
+    })
+    .toMatchObject({ pendingAlert: { kind: 'redirect', landedUrl }, handoff: undefined });
+}
+
+/**
  * @param {Page} page
  * @returns {Locator}
  */
 function widget(page) {
   return page.locator('#reload-until');
+}
+
+/**
+ * @param {Page} page
+ * @returns {Promise<string>} The markup inside the widget's shadow root, opened by `openShadow`.
+ */
+function widgetShadowHtml(page) {
+  return page.evaluate(() => document.getElementById('reload-until')?.shadowRoot?.innerHTML ?? '');
 }
 
 /**
@@ -259,7 +297,7 @@ test('fragment change keeps the watch', async () => {
   });
 });
 
-test('reloads in another tab change no stored value and keep an alarm acknowledged', async () => {
+test('reloads in another tab change no watch and keep an alarm acknowledged', async () => {
   await withScript(async ({ vm, site }) => {
     const pageA = await vm.context.newPage();
     await pageA.goto(`${site.origin}/appear?a`);
@@ -272,14 +310,17 @@ test('reloads in another tab change no stored value and keep an alarm acknowledg
 
     await expect(pageA).toHaveTitle(ALARM, { timeout: 30_000 });
     await pageA.bringToFront();
-    const writes = await countValueWrites(vm);
     await widget(pageA).getByRole('button', { name: 'Acknowledge' }).click();
     await expect(pageA).toHaveTitle('Appear');
+    // Violentmonkey writes values to extension storage some time after the page does, so the
+    // count starts only once the acknowledgement, and every write before it, has landed.
     await expect
-      .poll(writes, { message: 'the acknowledgement reaches storage' })
-      .toBeGreaterThan(0);
+      .poll(async () => pendingAlertOf(await storedValues(vm), `watch:${site.origin}/appear?a`), {
+        message: 'the acknowledgement reaches storage',
+      })
+      .toBeNull();
 
-    await countValueWrites(vm);
+    const writes = await countValueWrites(vm);
     const reloadsB = site.count('/appear?b');
     await expect.poll(() => site.count('/appear?b'), { timeout: 20_000 }).toBeGreaterThan(reloadsB);
     await expect(pageB).toHaveTitle(WATCHING, { timeout: 10_000 });
@@ -323,5 +364,113 @@ test("a URL with credentials doesn't break the script", async () => {
     await panel.getByRole('button', { name: 'Save watch' }).click();
     await expect(url).toHaveAttribute('aria-invalid', 'true');
     expect(errors).toEqual([]);
+  });
+});
+
+test('same-origin redirect raises the alarm with the full watched URL', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/redirect`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.waitForURL(`${site.origin}/login`, { timeout: 30_000 });
+    await expect(page).toHaveTitle(ALARM);
+    await expect(widget(page).getByRole('alert')).toContainText(watched);
+    await expectRedirectStored(vm, watched, `${site.origin}/login`);
+
+    const reopened = page.waitForRequest(watched);
+    await widget(page).getByRole('button', { name: 'Open watched page' }).click();
+    await reopened;
+    await page.waitForURL(`${site.origin}/login`);
+    await expect(page).toHaveTitle(ALARM);
+  });
+});
+
+test('cross-origin redirect shows only the watched host', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/xredirect`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.waitForURL(`http://other.test:${site.port}/login`, { timeout: 30_000 });
+    await expect(page).toHaveTitle(ALARM);
+    await expect(widget(page).getByRole('alert')).toContainText('127.0.0.1');
+    await expect(widget(page).getByRole('button', { name: 'Open watched page' })).toBeVisible();
+    expect(await widgetShadowHtml(page)).not.toContain('/xredirect');
+    expect(await page.evaluate(() => document.documentElement.outerHTML)).not.toContain(
+      '/xredirect',
+    );
+    expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage }))).not.toContain(
+      '/xredirect',
+    );
+    await expectRedirectStored(vm, watched, `http://other.test:${site.port}/login`);
+  });
+});
+
+test('leaving on purpose pauses instead of alarming', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/appear?leave`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.goto(`${site.origin}/plain`);
+    await page.waitForTimeout(3000);
+    await expect(page).toHaveTitle('Plain');
+    await expect(widget(page)).toHaveCount(0);
+    expect(pendingAlertOf(await storedValues(vm), `watch:${watched}`)).toBeNull();
+
+    const requests = site.count('/appear?leave');
+    await page.goBack();
+    await expect(page).toHaveTitle(WATCHING);
+    await expect
+      .poll(() => site.count('/appear?leave'), { timeout: 20_000 })
+      .toBeGreaterThan(requests);
+    await expect(page).toHaveTitle(WATCHING);
+  });
+});
+
+test("in-page navigation away keeps the page's own title", async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear?spa`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.evaluate(() => {
+      history.pushState(null, '', '/plain?spa');
+      document.title = 'Another view';
+    });
+    await page.waitForTimeout(2000);
+    await expect(page).toHaveTitle('Another view');
+    await expect(widget(page)).toHaveCount(0);
+  });
+});
+
+test('a pending alarm stays with the tab when it moves to another page of the site', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear?moves`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#target' });
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+
+    await page.evaluate(() => {
+      location.href = '/plain';
+    });
+    await page.waitForURL(`${site.origin}/plain`);
+    await expect(page).toHaveTitle(ALARM);
+    await expect(widget(page).getByRole('alert')).toBeVisible();
+
+    await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
+    await expect(widget(page)).toHaveCount(0);
+    await expect(page).toHaveTitle('Plain');
+    await page.reload();
+    await page.waitForTimeout(2000);
+    await expect(widget(page)).toHaveCount(0);
   });
 });
