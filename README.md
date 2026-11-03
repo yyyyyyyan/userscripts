@@ -7,6 +7,7 @@ choose. They are published on [Greasy Fork](https://greasyfork.org/en/users/1660
 
 | Script | What it does | Where it runs | Install |
 |---|---|---|---|
+| [Per-Site Light/Dark Mode](scripts/per-site-light-dark-mode/README.md) | Asks each site for its own light or dark theme, remembered per site. | Every website | Coming soon |
 
 The first scripts are on the way. They will appear in this table with an
 install link for each one.

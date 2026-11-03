@@ -1,57 +1,47 @@
 // ==UserScript==
-// @name         Site Color Preference
-// @namespace    yyyyyyyan/site-color-preference
-// @version      0.1.0
-// @description  Remember a native light/dark preference per hostname. Configure from Tampermonkey's menu.
+// @name         Per-Site Light/Dark Mode
+// @namespace    yyyyyyyan/per-site-light-dark-mode
+// @version      0.0.0
+// @description  Asks each site for its own light or dark theme, remembered per site. It never generates colors.
+// @author       yyyyyyyan
+// @license      GPL-3.0-or-later
+// @homepageURL  https://github.com/yyyyyyyan/userscripts/tree/main/scripts/per-site-light-dark-mode
+// @supportURL   https://github.com/yyyyyyyan/userscripts/issues
 // @match        https://*/*
 // @match        http://*/*
 // @run-at       document-start
-// @sandbox      JavaScript
 // @noframes
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
-// @license      GPL-3.0-or-later
+// @inject-into  page
+// @sandbox      JavaScript
+// @compatible   chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
+// @compatible   firefox Violentmonkey or Tampermonkey
 // ==/UserScript==
-
-/*
- * USE: Visit a site, then select Prefer light / Prefer dark in its Tampermonkey menu.
- *      The current tab reloads. Use browser default removes that hostname's rule.
- *      Set the website's own theme to System/Automatic when it offers that option.
- *
- * Preferences are stored by Tampermonkey, independently of website cookies.
- * Hostnames are exact: example.com, www.example.com and app.example.com are separate.
- *
- * This requests existing themes; it does not generate or invert colors. It rewrites
- * JavaScript matchMedia queries, accessible CSS media rules and HTML media attributes.
- * Browser controls/light-dark() are adjusted when the root declares both schemes.
- *
- * Limits: cross-origin stylesheets that deny CSSOM access are skipped; closed/shadow
- * trees, embedded frames and some dynamically adopted styles may be unaffected.
- * A site's explicit saved theme can take precedence. A brief initial flash is possible.
- * The status command reports inaccessible sheets and whether JS overriding succeeded.
- * There are no dependencies, telemetry, network calls of its own or periodic polling.
- */
 
 (() => {
   'use strict';
 
   const host = location.hostname.toLowerCase();
   const key = `site-color-preference:${host}`;
-  const saved = GM_getValue(key, 'default');
+  const saved = GM_getValue(key, /** @type {string} */ ('default'));
   const mode = saved === 'light' || saved === 'dark' ? saved : 'default';
-  const page = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
-  const nativeMatchMedia = page.matchMedia;
+  const page = /** @type {Window & typeof globalThis} */ (
+    typeof unsafeWindow === 'undefined' ? window : unsafeWindow
+  );
+  const nativeMatchMedia = /** @type {(query?: string) => MediaQueryList} */ (page.matchMedia);
   const blockedSheets = new Set();
   const status = {
     javascript: 'inactive',
     mediaConditions: 0,
     colorScheme: 'unchanged',
-    hooks: [],
+    hooks: /** @type {string[]} */ ([]),
   };
 
+  /** @param {string} next */
   function selectMode(next) {
     if (next === 'default') GM_deleteValue(key);
     else GM_setValue(key, next);
@@ -89,6 +79,7 @@
   if (mode === 'default') return;
 
   // Rewrite only the feature, preserving viewport, print, negation and other conditions.
+  /** @param {string} query */
   function rewrite(query) {
     return query
       .replace(
@@ -98,12 +89,17 @@
       .replace(/\(\s*prefers-color-scheme\s*\)/gi, '(width >= 0px)');
   }
 
+  /**
+   * @template {Function} T
+   * @param {T} fn
+   * @returns {T}
+   */
   function share(fn) {
     return typeof exportFunction === 'function' ? exportFunction(fn, page) : fn;
   }
 
   try {
-    page.matchMedia = share(function matchMedia(query) {
+    page.matchMedia = share(function matchMedia(/** @type {unknown} */ query) {
       if (arguments.length === 0) return nativeMatchMedia.call(page);
       return nativeMatchMedia.call(page, rewrite(String(query)));
     });
@@ -113,10 +109,11 @@
         ? 'installed'
         : 'failed';
   } catch (error) {
-    status.javascript = `failed: ${error.message}`;
+    status.javascript = `failed: ${/** @type {Error} */ (error).message}`;
     console.warn('[Site Color Preference] JavaScript override failed.', error);
   }
 
+  /** @param {MediaList | null | undefined} media */
   function fixMedia(media) {
     if (!media) return;
     const original = media.mediaText;
@@ -127,8 +124,16 @@
     }
   }
 
+  /**
+   * @typedef {CSSRule & { media?: MediaList, styleSheet?: CSSStyleSheet, cssRules?: CSSRuleList }} NestedRule
+   */
+
+  /**
+   * @param {CSSRuleList | CSSRule[]} rules
+   * @param {Set<CSSStyleSheet>} visited
+   */
   function walkRules(rules, visited) {
-    for (const rule of rules) {
+    for (const rule of /** @type {Iterable<NestedRule>} */ (rules)) {
       try {
         fixMedia(rule.media);
         if (rule.styleSheet) processSheet(rule.styleSheet, visited);
@@ -139,6 +144,10 @@
     }
   }
 
+  /**
+   * @param {CSSStyleSheet | null | undefined} sheet
+   * @param {Set<CSSStyleSheet>} [visited]
+   */
   function processSheet(sheet, visited = new Set()) {
     if (!sheet || visited.has(sheet)) return;
     visited.add(sheet);
@@ -146,7 +155,7 @@
       fixMedia(sheet.media);
       walkRules(sheet.cssRules, visited);
     } catch (error) {
-      if (error.name === 'SecurityError')
+      if (/** @type {Error} */ (error).name === 'SecurityError')
         blockedSheets.add(sheet.href || '(unreadable stylesheet)');
       else console.debug('[Site Color Preference] Could not adjust a stylesheet.', error);
     }
@@ -155,7 +164,9 @@
   function pinColorScheme() {
     const root = document.documentElement;
     if (!root || document.readyState === 'loading' || status.colorScheme !== 'unchanged') return;
-    const meta = document.querySelector('meta[name="color-scheme" i]');
+    const meta = /** @type {HTMLMetaElement | null} */ (
+      document.querySelector('meta[name="color-scheme" i]')
+    );
     const computed = getComputedStyle(root).colorScheme;
     const declared = computed === 'normal' ? meta?.content || '' : computed;
     // Avoid imposing dark browser defaults on a page that only provides light colors.
@@ -167,6 +178,7 @@
 
   const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
 
+  /** @param {Element & { sheet?: CSSStyleSheet | null }} element */
   function processElement(element) {
     if (element.nodeType !== Node.ELEMENT_NODE || !element.matches(selector)) return;
     const original = element.getAttribute('media');
@@ -180,10 +192,12 @@
     if (element.sheet) processSheet(element.sheet);
   }
 
+  /** @param {Node} node */
   function processSubtree(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
-    processElement(node);
-    for (const element of node.querySelectorAll(selector)) processElement(element);
+    processElement(/** @type {Element} */ (node));
+    for (const element of /** @type {Element} */ (node).querySelectorAll(selector))
+      processElement(element);
   }
 
   function fullScan() {
@@ -202,12 +216,18 @@
       const original = descriptor.value;
       Object.defineProperty(prototype, name, {
         ...descriptor,
-        value: share(function (...args) {
-          const result = Reflect.apply(original, this, args);
-          if (name === 'insertRule') walkRules([this.cssRules[result]], new Set());
-          else processSheet(this);
-          return result;
-        }),
+        value: share(
+          /**
+           * @this {CSSStyleSheet}
+           * @param {any[]} args
+           */
+          function (...args) {
+            const result = Reflect.apply(original, this, args);
+            if (name === 'insertRule') walkRules([this.cssRules[result]], new Set());
+            else processSheet(this);
+            return result;
+          },
+        ),
       });
       status.hooks.push(name);
     } catch (error) {
@@ -219,13 +239,13 @@
     let stylesChanged = false;
     for (const mutation of mutations) {
       if (mutation.type === 'attributes') {
-        processElement(mutation.target);
+        processElement(/** @type {Element} */ (mutation.target));
         stylesChanged = true;
       } else if (
         mutation.target.nodeType === Node.ELEMENT_NODE &&
-        mutation.target.localName === 'style'
+        /** @type {Element} */ (mutation.target).localName === 'style'
       ) {
-        processElement(mutation.target);
+        processElement(/** @type {Element} */ (mutation.target));
         stylesChanged = true;
       } else if (
         mutation.type === 'characterData' &&
@@ -238,7 +258,8 @@
           processSubtree(node);
           if (
             node.nodeType === Node.ELEMENT_NODE &&
-            (node.matches(selector) || node.querySelector(selector))
+            (/** @type {Element} */ (node).matches(selector) ||
+              /** @type {Element} */ (node).querySelector(selector))
           ) {
             stylesChanged = true;
           }
@@ -257,11 +278,9 @@
   document.addEventListener(
     'load',
     (event) => {
-      if (
-        event.target.nodeType === Node.ELEMENT_NODE &&
-        ['link', 'style'].includes(event.target.localName)
-      ) {
-        processElement(event.target);
+      const target = /** @type {Element} */ (event.target);
+      if (target.nodeType === Node.ELEMENT_NODE && ['link', 'style'].includes(target.localName)) {
+        processElement(target);
         pinColorScheme();
       }
     },

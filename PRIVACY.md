@@ -15,6 +15,7 @@ sends over the network.
 
 | Script | What it stores | Where | Network requests |
 |---|---|---|---|
+| Per-Site Light/Dark Mode | One choice per site (light, dark or browser default). | In your userscript manager's storage on your device. | None. |
 
 Each row is added when a script is published. Each script's README repeats its
 row under **Privacy**.

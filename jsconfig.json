@@ -9,5 +9,5 @@
     "types": ["@violentmonkey/types"],
     "skipLibCheck": true
   },
-  "include": ["scripts/**/*.user.js"]
+  "include": ["scripts/**/*.user.js", "types/**/*.d.ts"]
 }
