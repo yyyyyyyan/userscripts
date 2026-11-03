@@ -1,1 +1,0 @@
-One **Alert style** setting chooses how an alarm reaches you: on the page only, with one desktop notification, or with a desktop notification and a sound every minute while the tab stays open; you can allow the site's own notifications, and **Acknowledge** closes the notification, except one shown by Tampermonkey.
