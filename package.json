@@ -8,7 +8,7 @@
     "pree2e": "node tools/fetch-violentmonkey.mjs",
     "e2e": "playwright test",
     "typecheck": "tsc -p jsconfig.json",
-    "lint": "oxlint",
+    "lint": "oxlint --no-error-on-unmatched-pattern",
     "format": "oxfmt"
   },
   "devDependencies": {
