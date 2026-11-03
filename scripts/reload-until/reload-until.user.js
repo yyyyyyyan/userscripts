@@ -37,6 +37,13 @@
    */
 
   /**
+   * Why the script paused a watch on its own. A watch the user turned off has none.
+   * @typedef {object} Pause
+   * @property {'not-ready' | 'invalid' | 'error'} reason
+   * @property {string} detail
+   */
+
+  /**
    * How an alarm reaches the user. Every style keeps the alarm on the page until Acknowledge.
    * @typedef {'page' | 'page-and-desktop' | 'insistent'} AlertStyle
    */
@@ -55,6 +62,7 @@
    * @property {number} confirmSeconds
    * @property {AlertStyle} alertStyle
    * @property {PendingAlert | null} pendingAlert
+   * @property {Pause | null} paused Set while the watch is on but the script paused it.
    */
 
   /**
@@ -87,7 +95,7 @@
   const SESSION_ALARM_KEY = 'reload-until:alarm';
   const SESSION_COLLAPSED_KEY = 'reload-until:collapsed';
   const HINT_KEY = 'hint-shown';
-  const MENU_COMMAND = 'Reload Until: Manage watches';
+  const MENU_COMMAND = 'Reload Until settings';
   const HANDOFF_START_SLACK_MS = 500;
   const HANDOFF_CLAIM_DELAY_MS = 3000;
   const MAX_SECONDS = 86400;
@@ -108,6 +116,7 @@
     confirmSeconds: 3,
     alertStyle: 'page-and-desktop',
     pendingAlert: null,
+    paused: null,
   };
 
   const PANEL_CSS = `
@@ -579,7 +588,17 @@
      */
     function pause(reason, detail) {
       stop();
-      persistWatch(watch, { enabled: false });
+      persistWatch(
+        watch,
+        reason === 'user'
+          ? { enabled: false, paused: null }
+          : {
+              paused: {
+                reason: /** @type {Pause['reason']} */ (reason),
+                detail: detail ?? '',
+              },
+            },
+      );
       report.onStopped(reason, detail);
     }
 
@@ -653,7 +672,7 @@
           pause('invalid', /** @type {Error} */ (error).message);
           return;
         }
-        if (byUser && !persistWatch(watch, { enabled: true })) {
+        if (byUser && !persistWatch(watch, { enabled: true, paused: null })) {
           report.onStopped('storage');
           return;
         }
@@ -1116,7 +1135,7 @@
       parent.append(el);
       return el;
     }
-    add('h2', 'Reload Until settings').id = 'reload-until-title';
+    add('h2', MENU_COMMAND).id = 'reload-until-title';
     add(
       'p',
       'Only this site’s watches are listed here. While this panel is open, this tab doesn’t reload.',
@@ -1131,7 +1150,8 @@
     const fresh = add('option', 'New watch for this page', picker);
     fresh.value = '';
     for (const watch of listWatches(location.origin)) {
-      const option = add('option', (watch.enabled ? 'On: ' : 'Off: ') + watch.url, picker);
+      const state = watch.paused ? 'Paused: ' : watch.enabled ? 'On: ' : 'Off: ';
+      const option = add('option', state + watch.url, picker);
       option.value = watch.url;
     }
     const form = add('form');
@@ -1211,7 +1231,7 @@
       'selector',
       'Element to look for',
       'text',
-      'Enter a CSS selector, such as #price or .sold-out. To find one, right-click the element and select Inspect, then copy its selector from the developer tools. Enter body to check the whole page.',
+      'Enter a CSS selector, such as #price or .sold-out, or enter “body” to check the whole page. To find one, right-click the element and select Inspect. In the developer tools, right-click the highlighted line, then select Copy > Copy selector in Chrome or Copy > CSS Selector in Firefox.',
       what,
     ).required = true;
     field(
@@ -1236,7 +1256,7 @@
       'readySelector',
       'Only check when the page has this element (optional)',
       'text',
-      'A CSS selector, like the one above. If the page doesn’t have this element, the watch pauses instead of raising an alarm.',
+      'A CSS selector, like the one above. If the page doesn’t have this element, the watch pauses instead of raising an alarm, and the box on the page says why and offers Resume.',
       what,
     );
     const readyHelp = /** @type {string} */ (ready.getAttribute('aria-describedby'));
@@ -1311,7 +1331,7 @@
       const state = Native ? Native.permission : 'unavailable';
       permissionStatus.textContent =
         state === 'granted'
-          ? 'Desktop notifications from this site: allowed. Alarms ask the browser to keep them on screen until you click them.'
+          ? 'Desktop notifications from this site: allowed. Alarms ask the browser to keep them on screen until you select or close them.'
           : state === 'denied'
             ? 'Desktop notifications from this site: blocked. To allow them, change this site’s notification setting in your browser. Until then, alarms use your userscript manager’s notifications, which some browsers hide after a few seconds.'
             : state === 'default'
@@ -1341,7 +1361,7 @@
     unsaved.className = 'unsaved';
     unsaved.setAttribute('role', 'alert');
     unsaved.hidden = true;
-    add('p', 'You have unsaved changes to this watch.', unsaved);
+    add('p', 'You have unsaved changes to this watch.', unsaved).id = 'reload-until-unsaved';
     const unsavedActions = add('div', undefined, unsaved);
     unsavedActions.className = 'actions';
     const actions = add('div');
@@ -1358,7 +1378,9 @@
       return b;
     }
     const keepButton = action('Keep editing', keepEditing, unsavedActions);
-    action('Discard changes', discardEdits, unsavedActions);
+    const discardButton = action('Discard changes', discardEdits, unsavedActions);
+    for (const choice of [keepButton, discardButton])
+      choice.setAttribute('aria-describedby', 'reload-until-unsaved');
     action('Save watch', saveFromForm);
     const remove = action('Delete watch', () => {
       if (!editingURL) return;
@@ -1486,6 +1508,7 @@
       const watch = /** @type {Record<string, unknown>} */ ({
         ...DEFAULTS,
         url: currentUrl() ?? '',
+        enabled: true,
         ...saved,
       });
       const defaults = /** @type {Record<string, unknown>} */ (DEFAULTS);
@@ -1538,7 +1561,7 @@
         close();
       } catch (e) {
         if (e instanceof FieldError) showFieldError(e);
-        else error.textContent = 'Could not save: ' + /** @type {Error} */ (e).message;
+        else error.textContent = 'Couldn’t save: ' + /** @type {Error} */ (e).message;
       }
     }
     function close() {
@@ -1694,7 +1717,7 @@
       actions.append(element);
       return element;
     }
-    const toggle = button('Enable', () => (watcher.running ? watcher.pause() : start(true)));
+    const toggle = button('Turn on', () => (watcher.running ? watcher.pause() : start(true)));
     /** @type {HTMLButtonElement | null} */
     let testButton = null;
     /** @type {HTMLButtonElement | null} */
@@ -1706,6 +1729,8 @@
       settingsButton = button('Settings', openManager);
       testButton = button('Test alert', showTest);
     }
+    const turnOffButton = button('Turn off', () => watcher.pause());
+    turnOffButton.hidden = true;
     const acknowledgeButton = button('Acknowledge', acknowledge);
     acknowledgeButton.hidden = true;
     body.append(status, notice, detail, actions);
@@ -1721,7 +1746,8 @@
 
     const watcher = createWatcher(watch, {
       onStarted() {
-        toggle.textContent = 'Disable';
+        toggle.textContent = 'Turn off';
+        turnOffButton.hidden = true;
         status.textContent = 'Starting watch…';
       },
       onProgress({ phase, secondsLeft, found }) {
@@ -1742,25 +1768,25 @@
         }
       },
       onStopped(reason, problem) {
-        toggle.textContent = 'Enable';
         if (!showing) restoreTitle();
-        status.textContent =
-          reason === 'user'
-            ? 'Paused. The watch stays off until you select Enable or turn it on in Settings.'
-            : reason === 'not-ready'
-              ? 'Paused: the page doesn’t have the element that shows it loaded. If you were signed out, sign in again, then select Enable.'
-              : reason === 'invalid'
-                ? 'Paused: this watch’s settings need fixing. ' + problem
-                : reason === 'storage'
-                  ? 'Paused: the script can’t save to its storage, so it can’t keep track of an alarm.'
-                  : 'Paused: something went wrong. ' + problem;
+        if (reason === 'user') {
+          showOff();
+          return;
+        }
+        if (reason === 'storage') {
+          toggle.textContent = 'Turn on';
+          status.textContent =
+            'Stopped: the script can’t save to its storage, so it can’t keep track of an alarm.';
+          return;
+        }
+        showPaused({ reason, detail: problem ?? '' });
       },
       onTriggered(persisted) {
-        toggle.textContent = 'Enable';
-        status.textContent = 'Stopped: the page changed. Select Enable to watch again.';
+        toggle.textContent = 'Turn on';
+        status.textContent = 'Stopped: the page changed. Select Turn on to watch again.';
         showAlarm();
         if (!persisted)
-          notice.textContent += '\nThe alarm could not be saved; avoid reloading this page.';
+          notice.textContent += '\nThe alarm couldn’t be saved, so avoid reloading this page.';
       },
     });
 
@@ -1905,11 +1931,12 @@
           watch.pendingAlert = null;
         } catch (error) {
           notice.textContent +=
-            '\nCould not save acknowledgement; try again: ' + /** @type {Error} */ (error).message;
+            '\nCouldn’t save the acknowledgement. Try again: ' +
+            /** @type {Error} */ (error).message;
           return;
         }
         forgetAlarm(watch.url);
-        status.textContent = stopped + ' Select Enable to watch again.';
+        status.textContent = stopped + ' Select Turn on to watch again.';
       }
       silenceAlarm();
       clearNotice();
@@ -1919,25 +1946,51 @@
     /** @param {boolean} byUser Whether the user turned the watch on, as opposed to a page load. */
     function start(byUser) {
       if (currentUrl() !== watch.url) {
-        status.textContent = 'Stopped: return to the watched URL before enabling this watch.';
+        status.textContent = 'To turn this watch on, go back to the page it watches.';
         return;
       }
       if (watch.pendingAlert) {
-        status.textContent = 'Stopped: Acknowledge the pending alert before enabling this watch.';
+        status.textContent = 'Select Acknowledge on the alarm before turning this watch on.';
         return;
       }
       watcher.start(byUser);
     }
 
+    function showOff() {
+      toggle.textContent = 'Turn on';
+      turnOffButton.hidden = true;
+      status.textContent =
+        'Turned off. It stays off until you select Turn on here or turn it on in Settings.';
+    }
+
+    /** @param {Pause} pause */
+    function showPaused({ reason, detail: problem }) {
+      toggle.textContent = 'Resume';
+      turnOffButton.hidden = away;
+      status.textContent =
+        reason === 'not-ready'
+          ? 'Paused: the page doesn’t have the element that shows it loaded, so it may be an error or sign-in page. Check the page and sign in again if needed, then select Resume.'
+          : [
+              reason === 'invalid'
+                ? 'Paused: this watch’s settings need fixing.'
+                : 'Paused: something went wrong.',
+              problem,
+              reason === 'invalid' ? 'Fix them in Settings.' : 'Select Resume to try again.',
+            ]
+              .filter(Boolean)
+              .join(' ');
+    }
+
     if (watch.pendingAlert) {
-      status.textContent = stoppedStatus() + ' An alert is waiting for you to acknowledge it.';
+      status.textContent = stoppedStatus() + ' An alarm is waiting for you to acknowledge it.';
       showAlarm();
-    } else if (watch.enabled) start(false);
-    else status.textContent = 'Disabled. Enable to start watching.';
+    } else if (watch.paused) showPaused(watch.paused);
+    else if (watch.enabled) start(false);
+    else showOff();
     return {
       suspendRefresh() {
         watcher.stop();
-        toggle.textContent = 'Enable';
+        toggle.textContent = 'Turn on';
         watchedTitle('settings open');
       },
       destroy() {

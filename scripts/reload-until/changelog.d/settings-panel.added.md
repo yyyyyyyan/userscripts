@@ -1,1 +1,1 @@
-The settings panel groups its options under What to watch, When and How to alert, and a one-time tip after you install the script shows where to find it.
+The settings panel groups its options in plain words under What to watch, When and How to alert, warns before it discards unsaved changes and closes with Escape; the box on the page has Hide and Show, and a one-time tip after you install the script shows where the settings are.

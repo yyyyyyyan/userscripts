@@ -20,7 +20,10 @@ test.use({ actionTimeout: 15_000 });
 
 const WATCHING = /^\u{1F441}/u;
 const ALARM = /^\u{26A0}/u;
-const MENU_COMMAND = 'Reload Until: Manage watches';
+const MENU_COMMAND = /const MENU_COMMAND = '([^']+)';/.exec(source)?.[1];
+if (!MENU_COMMAND) {
+  throw new Error('the script declares no MENU_COMMAND');
+}
 
 /** The settings panel's field labels, exactly as shown. */
 const LABELS = {
@@ -93,11 +96,10 @@ function field(panel, label) {
  * @param {Locator} panel
  * @param {WatchFields} watch
  */
-async function fillWatch(
-  panel,
-  { condition, selector, interval = 10, alertStyle, enabled = true },
-) {
-  await field(panel, LABELS.enabled).setChecked(enabled);
+async function fillWatch(panel, { condition, selector, interval = 10, alertStyle, enabled }) {
+  if (enabled !== undefined) {
+    await field(panel, LABELS.enabled).setChecked(enabled);
+  }
   await field(panel, LABELS.interval).fill(String(interval));
   await field(panel, LABELS.condition).selectOption({ label: condition });
   await field(panel, LABELS.selector).fill(selector);
@@ -655,7 +657,7 @@ test('page JavaScript cannot read watches', async () => {
     expect(await capturedRoots(), 'a settings panel was opened').toBe(1);
     expect(await countdown(page), 'refreshing was suspended').not.toBeNull();
 
-    await clickFromPage('Disable');
+    await clickFromPage('Turn off');
     await page.waitForTimeout(1000);
     await expect(page).toHaveTitle(WATCHING);
     const watch = /** @type {{ enabled?: boolean }} */ (
@@ -893,6 +895,10 @@ test('panel has three groups', async () => {
     const panel = await openPanel(vm, page);
 
     await expect(panel).toHaveAttribute('aria-modal', 'true');
+    await expect(
+      panel.getByRole('heading', { level: 2 }),
+      'the menu command names the panel',
+    ).toHaveText(MENU_COMMAND);
     await expect(panel.getByRole('heading', { level: 3 })).toHaveText([
       'What to watch',
       'When',
@@ -955,6 +961,11 @@ test('unsaved edits warn before switching or closing', async () => {
 
     await picker.selectOption({ label: LABELS.newWatch });
     await expect(warning).toBeVisible();
+    for (const choice of ['Keep editing', 'Discard changes']) {
+      await expect(panel.getByRole('button', { name: choice })).toHaveAccessibleDescription(
+        /unsaved changes/,
+      );
+    }
     await expect(picker).toHaveValue(watched);
     await expect(selector).toHaveValue('#edited');
     await panel.getByRole('button', { name: 'Keep editing' }).click();
@@ -1042,8 +1053,8 @@ test('disabled watch shows nothing', async () => {
     await field(panel, LABELS.enabled).check();
     await panel.getByRole('button', { name: 'Save watch' }).click();
     await expect(page).toHaveTitle(WATCHING);
-    await widget(page).getByRole('button', { name: 'Disable' }).click();
-    await expect(widget(page).getByRole('status')).toHaveText(/Paused/);
+    await widget(page).getByRole('button', { name: 'Turn off' }).click();
+    await expect(widget(page).getByRole('status')).toHaveText(/Turned off/);
     await page.reload();
     await expect(page).toHaveTitle('Appear');
     await page.waitForTimeout(2000);
@@ -1073,5 +1084,54 @@ test('widget is labeled and collapsible', async () => {
     await expect(widget(page).getByRole('status')).toBeHidden();
     await show.click();
     await expect(widget(page).getByRole('status')).toBeVisible();
+  });
+});
+
+test('a new watch is on by default', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear?default`);
+    const panel = await openPanel(vm, page);
+    await expect(field(panel, LABELS.enabled)).toBeChecked();
+    await field(panel, LABELS.selector).fill('#never-there');
+    await field(panel, LABELS.condition).selectOption({ label: 'Appears' });
+    await panel.getByRole('button', { name: 'Save watch' }).click();
+    await expect(panel).toBeHidden();
+    await expect(page).toHaveTitle(WATCHING);
+  });
+});
+
+test('a watch paused by its page-ready check survives a reload and resumes', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/appear?ready`;
+    // The fixture serves #target only from the second request, so the first load looks unready.
+    await page.goto(watched);
+    const panel = await openPanel(vm, page);
+    await fillWatch(panel, { condition: 'Appears', selector: '#never-there', enabled: true });
+    await field(panel, LABELS.ready).fill('#target');
+    await panel.getByRole('button', { name: 'Save watch' }).click();
+    await expect(panel).toBeHidden();
+    await expect(widget(page).getByRole('status')).toHaveText(/Paused/, { timeout: 10_000 });
+
+    await page.reload();
+    await expect(page.locator('#target')).toBeVisible();
+    await page.waitForTimeout(2000);
+    await expect(widget(page).getByRole('status')).toHaveText(/Paused.*sign-in page/);
+    await expect(widget(page).getByRole('button', { name: 'Turn off' })).toBeVisible();
+    await expect(page).toHaveTitle('Appear');
+
+    await widget(page).getByRole('button', { name: 'Resume' }).click();
+    await expect(page).toHaveTitle(WATCHING);
+    await page.waitForTimeout(3000);
+    await expect(page).toHaveTitle(WATCHING);
+    await expect
+      .poll(async () => {
+        const watch = /** @type {{ enabled?: boolean, paused?: unknown }} */ (
+          (await storedValues(vm))[`watch:${watched}`]
+        );
+        return { enabled: watch.enabled, paused: watch.paused };
+      })
+      .toEqual({ enabled: true, paused: null });
   });
 });
