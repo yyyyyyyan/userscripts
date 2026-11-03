@@ -68,8 +68,8 @@ the test. Select **Acknowledge** to dismiss it sooner.
 
 The page stops reloading. The box turns red and says what happened, and the tab
 title starts with `⚠ ACKNOWLEDGE`. Depending on the alert style, you also get a
-desktop notification and a sound. Selecting the notification usually brings you
-to the tab.
+desktop notification and a sound. Selecting the notification may bring you to
+the tab, depending on your browser and userscript manager.
 
 1. Go to the tab and look at the page.
 2. Select **Acknowledge** in the box.
@@ -90,8 +90,9 @@ acknowledge it.
 
 ### Pause, change or delete a watch
 
-- To stop reloading, select **Turn off** in the box. A watch that is off shows
-  nothing on its page. To turn it on again, use the settings.
+- To stop reloading, select **Turn off** in the box. Until the page next loads,
+  the box offers **Turn on**. After that, a watch that is off shows nothing on
+  its page, and you turn it on again in the settings.
 - To fold the box down to its name, select **Hide**. Select **Show** to open it
   again. An alarm always opens it.
 - To change a watch, open the settings on any page of the same site, select the
@@ -150,8 +151,8 @@ the page and in the tab title until you select **Acknowledge**.
 - **On this page only**: no desktop notification and no sound.
 - **On this page, plus one desktop notification**: the default.
 - **On this page, plus a desktop notification and a sound every minute**: the
-  notification and a short beep repeat every minute until you acknowledge the
-  alarm, as long as the tab stays open.
+  notification and a short alert sound repeat every minute until you
+  acknowledge the alarm, as long as the tab stays open.
 
 Each time a page with a waiting alarm loads, it sends the desktop notification
 again, for example when you reload it.

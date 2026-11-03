@@ -129,6 +129,13 @@ local test pages. Add these lines to its checklist:
       alarm still shows a desktop notification (from the userscript manager).
 - [ ] Firefox: an alarm with the insistent alert style repeats its desktop
       notification about once a minute, and **Acknowledge** stops it.
+- [ ] Chromium and Firefox: selecting an alarm's desktop notification, from the
+      site and from the manager, brings its tab to the front, or the README's
+      "may" is still accurate.
+- [ ] Chromium and Firefox: with the insistent style, let the alarm go off
+      after a few automatic reloads without touching the page. Note whether the
+      sound plays, or whether the box says it may be blocked and what it tells
+      you to do.
 - [ ] Firefox: on a site with a strict Content Security Policy, such as
       github.com, the settings panel and the alarm are styled.
 - [ ] Firefox: a reload that a server redirects to another site raises the
