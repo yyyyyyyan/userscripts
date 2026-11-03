@@ -1,0 +1,1 @@
+The settings panel shows only the current site's watches, the script ignores clicks that a page fakes with its own scripts and stays idle on pages you don't watch, and its boxes keep their styling on sites that block inline styles.
