@@ -171,8 +171,14 @@
     const declared = computed === 'normal' ? meta?.content || '' : computed;
     // Avoid imposing dark browser defaults on a page that only provides light colors.
     if (/\blight\b/i.test(declared) && /\bdark\b/i.test(declared)) {
-      root.style.setProperty('color-scheme', mode, 'important');
-      status.colorScheme = mode;
+      try {
+        const sheet = new page.CSSStyleSheet();
+        sheet.replaceSync(`:root { color-scheme: ${mode}; }`);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        status.colorScheme = mode;
+      } catch (error) {
+        status.colorScheme = `failed: ${/** @type {Error} */ (error).message}`;
+      }
     }
   }
 
