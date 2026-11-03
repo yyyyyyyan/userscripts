@@ -1,25 +1,26 @@
 // ==UserScript==
-// @name         Per-Site Light/Dark Mode
-// @namespace    yyyyyyyan/per-site-light-dark-mode
-// @version      0.0.0
-// @description  Makes each site use its own light or dark theme, remembered per site, without generating colors.
-// @author       yyyyyyyan
-// @license      GPL-3.0-or-later
-// @homepageURL  https://github.com/yyyyyyyan/userscripts/tree/main/scripts/per-site-light-dark-mode
-// @supportURL   https://github.com/yyyyyyyan/userscripts/issues
-// @match        https://*/*
-// @match        http://*/*
-// @run-at       document-start
+// @name          Per-Site Light/Dark Mode
+// @namespace     yyyyyyyan/per-site-light-dark-mode
+// @version       0.0.0
+// @description   Makes each site use its own light or dark theme, remembered per site, without generating colors.
+// @author        yyyyyyyan
+// @license       GPL-3.0-or-later
+// @homepageURL   https://github.com/yyyyyyyan/userscripts/tree/main/scripts/per-site-light-dark-mode
+// @supportURL    https://github.com/yyyyyyyan/userscripts/issues
+// @match         https://*/*
+// @match         http://*/*
+// @run-at        document-start
 // @noframes
-// @grant        unsafeWindow
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_deleteValue
-// @grant        GM_registerMenuCommand
-// @inject-into  auto
-// @sandbox      JavaScript
-// @compatible   chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
-// @compatible   firefox Violentmonkey or Tampermonkey
+// @grant         unsafeWindow
+// @grant         GM_getValue
+// @grant         GM_setValue
+// @grant         GM_deleteValue
+// @grant         GM_registerMenuCommand
+// @inject-into   auto
+// @sandbox       JavaScript
+// @compatible    chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
+// @compatible    firefox Violentmonkey or Tampermonkey
+// @incompatible  safari Userscripts lacks the menu commands this script needs
 // ==/UserScript==
 
 (() => {
@@ -152,7 +153,7 @@
           : `No choice is saved for ${host}`;
       return [
         `${saved}, so this page follows your browser's setting, which is ${browser}.`,
-        "To pick one, choose Light or Dark in your userscript manager's menu.",
+        "To pick one, select Light or Dark in your userscript manager's menu.",
       ];
     }
 

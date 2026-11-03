@@ -13,21 +13,26 @@ docs.python.org, w3.org and wiki.archlinux.org.
 
 ## How to use
 
-1. Open a site that has both a light and a dark theme.
+Before you start, you need a [userscript manager][manager], either Violentmonkey
+or Tampermonkey. On Chrome and other Chromium browsers, also turn on the **Allow
+User Scripts** switch for the manager: open `chrome://extensions`, select
+**Details** on the manager, and turn on **Allow User Scripts**. Without it, no
+userscript runs.
+
+1. Open a site that has both a light and a dark theme. If the site has its own
+   theme button, set it to System or Automatic first. A theme you pick with the
+   site's own button wins over this script.
 2. Open your userscript manager's menu for the page.
-3. Under Per-Site Light/Dark Mode, choose the **Dark for** entry. It ends with
-   the site's name and "(reloads the tab)", for example **Dark for
-   docs.python.org (reloads the tab)**. For the light theme, choose the **Light
-   for** entry instead.
-4. Wait for the tab to reload. The site now shows the theme you chose.
-5. If nothing changed, open the menu again and choose **Status**. It tells you
+3. Under Per-Site Light/Dark Mode, select the **Dark for** entry. It ends with
+   the site's name and "(reloads the tab)". For example, on Python's
+   documentation it reads **Dark for docs.python.org (reloads the tab)**. For
+   the light theme, select the **Light for** entry instead.
+4. Wait for the tab to reload. The site now shows the theme you selected.
+5. If nothing changed, open the menu again and select **Status**. It tells you
    in plain words whether your choice applied and what to try next.
 
-To undo a choice, choose the **Browser default for** entry. The site then
+To undo a choice, select the **Browser default for** entry. The site then
 follows your browser again.
-
-If the site has its own theme button, set it to System or Automatic. A theme you
-pick with the site's own button wins over this script.
 
 ## Settings
 
@@ -41,9 +46,9 @@ per site:
 The menu marks your current choice with a check mark, and it names the site the
 choice is saved for.
 
-A choice also covers the site's subdomains. If you choose Dark on `example.com`,
+A choice also covers the site's subdomains. If you select Dark on `example.com`,
 then `www.example.com` and `docs.example.com` use Dark too. To give one
-subdomain a different theme, open that subdomain and choose again. A choice
+subdomain a different theme, open that subdomain and select again. A choice
 saved on a subdomain wins over the one from its parent. **Browser default** on a
 subdomain makes it ignore the parent's choice.
 
@@ -71,30 +76,26 @@ network requests.
 ## Limitations
 
 - It only changes sites that have a dark theme of their own. On a site with just
-  one theme, **Status** says the page has not asked which theme you prefer.
+  one theme, nothing changes.
 - It can't read some style sheets that a site loads from another web address
   without allowing access. Parts of the page that depend on them may not switch.
-  **Status** counts them.
+  **Status** may mention them.
 - A page that checks your theme very early, before the script runs, may keep
-  your browser's setting. **Status** says so. Reloading the page or setting the
-  site's own theme to System or Automatic often fixes it.
+  your browser's setting. **Status** may say so. Reloading the page or setting
+  the site's own theme to System or Automatic may help.
 - A site that saves your theme with your account, or in its own button, decides
   for itself. The script does not override it.
 - Closed shadow roots that a page creates before the script runs are not
   reached. Parts of a page built that way may not switch.
 - It does not change embedded frames.
 - You may see the other theme for a moment before the page switches.
-- In some cases your manager can't run the script inside the page itself. A
-  site's strict Content Security Policy in Firefox, and pages that are not HTML,
-  are examples. The page's own scripts may then still see your browser's
-  setting, and **Status** says so.
+- On pages that are not HTML, your manager can't run the script inside the page
+  itself, so the page's own scripts may still see your browser's setting.
+  **Status** says so. In Firefox, a site with a strict Content Security Policy
+  may cause the same problem. **Status** is meant to say so there too, but this
+  has had less testing.
 - It works in Violentmonkey and Tampermonkey. It does not work in Greasemonkey 4
   or in Safari's Userscripts.
-- Automated tests run in Chromium with Violentmonkey. Firefox and Tampermonkey
-  get a manual check before each first release.
-- On Chrome, your manager needs the **Allow User Scripts** switch. Open
-  `chrome://extensions`, select **Details** on your manager, and turn on **Allow
-  User Scripts**. Without it, no userscript runs.
 
 ## Privacy
 
@@ -106,12 +107,15 @@ network requests.
 - If your manager syncs or backs up its data, your choices go with it. That is
   the manager's feature, not this script's.
 
-See [PRIVACY.md](https://github.com/yyyyyyyan/userscripts/blob/main/PRIVACY.md)
-for the same information about every script in this collection.
+See [PRIVACY.md][privacy] for the same information about every script in this
+collection.
 
 ## Changelog and support
 
--
-  [Changelog](https://github.com/yyyyyyyan/userscripts/blob/main/scripts/per-site-light-dark-mode/CHANGELOG.md)
-- [Report a bug or ask for a
-  feature](https://github.com/yyyyyyyan/userscripts/issues)
+- [Changelog][changelog]
+- [Report a bug or ask for a feature][issues]
+
+[manager]: https://github.com/yyyyyyyan/userscripts#get-a-userscript-manager
+[privacy]: https://github.com/yyyyyyyan/userscripts/blob/main/PRIVACY.md
+[changelog]: https://github.com/yyyyyyyan/userscripts/blob/main/scripts/per-site-light-dark-mode/CHANGELOG.md
+[issues]: https://github.com/yyyyyyyan/userscripts/issues

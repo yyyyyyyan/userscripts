@@ -92,9 +92,23 @@ and fill in the script-specific list.
   - [ ] <site>
 ```
 
-For Per-Site Light/Dark Mode, check Firefox with particular care. The script
-pins the color scheme with a constructed style sheet shared across realms, and
-that path is untested there.
+For Per-Site Light/Dark Mode, its README promises these, so the checklist lists
+them and the release waits until each is checked:
+
+- [ ] Sites, each with **Dark for** selected while the browser is in light:
+  - [ ] react.dev
+  - [ ] developer.mozilla.org
+  - [ ] github.com
+  - [ ] docs.python.org
+  - [ ] w3.org
+  - [ ] wiki.archlinux.org
+- [ ] In Tampermonkey, on at least one of those sites, the theme applies and
+  **Status** reports it.
+- [ ] Form controls and scroll bars follow the choice, in Chromium and in
+  Firefox.
+- [ ] In Firefox, on a site with a strict Content Security Policy, the theme
+  applies or **Status** reports that the script could not run inside the page.
+  This path has no automated test.
 
 While the repository is private, raw files need a sign-in, so a pull request's
 file can't be installed from its address. Install from a local copy instead:

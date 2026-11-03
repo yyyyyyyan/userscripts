@@ -1,7 +1,8 @@
 # Userscripts
 
 A small collection of userscripts that each do one job on the web pages you
-choose. They are published on [Greasy Fork](https://greasyfork.org/en/users/1660417-yyyyyyyan).
+choose. Each one is published on [Greasy Fork](https://greasyfork.org/en/users/1660417-yyyyyyyan)
+as it is released.
 
 ## Scripts
 
