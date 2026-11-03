@@ -144,6 +144,9 @@ local test pages. Add these lines to its checklist:
 - [ ] Tampermonkey: after a fresh install, the first page shows the one-time
       tip, and the command it names appears in Tampermonkey's menu with the
       same words.
+- [ ] Firefox and Tampermonkey: the settings panel and the alarm box are styled
+      on an ordinary site too. The script runs in its own JavaScript world,
+      where style sheets attach differently from the page's world.
 ```
 
 While the repository is private, raw files need a sign-in, so a pull request's

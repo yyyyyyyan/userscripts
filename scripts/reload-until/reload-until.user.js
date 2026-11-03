@@ -11,6 +11,8 @@
 // @match         https://*/*
 // @run-at        document-idle
 // @noframes
+// @inject-into   content
+// @sandbox       DOM
 // @grant         GM_getValue
 // @grant         GM_setValue
 // @grant         GM_deleteValue

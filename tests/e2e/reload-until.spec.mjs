@@ -41,11 +41,11 @@ const LABELS = {
 /**
  * @param {(env: { vm: Vm, site: Site }) => Promise<void>} body
  */
-async function withScript(body) {
+async function withScript(body, transform = (/** @type {string} */ text) => text) {
   const site = await startFixtures();
   const vm = await launchWithViolentmonkey({ hostMap: { 'other.test': site.port } });
   try {
-    await vm.install(openShadow(source));
+    await vm.install(openShadow(transform(source)));
     await body({ vm, site });
   } finally {
     await vm.close();
@@ -535,6 +535,71 @@ test('cross-origin redirect shows only the watched host', async () => {
   });
 });
 
+test('a landing page that hooks built-ins never sees the watched address', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.addInitScript(() => {
+      if (location.hostname !== 'other.test') return;
+      /** @type {string[]} */
+      const leaks = [];
+      Object.assign(window, { leaks });
+      const scan = (/** @type {unknown} */ value, depth = 0) => {
+        if (typeof value === 'string') {
+          if (value.includes('/xredirect')) leaks.push(value);
+        } else if (value && typeof value === 'object' && depth < 3) {
+          for (const key of Reflect.ownKeys(value)) {
+            try {
+              scan(/** @type {any} */ (value)[key], depth + 1);
+            } catch {
+              /* unreadable property */
+            }
+          }
+        }
+      };
+      let inside = false;
+      /** @param {any} owner @param {string} name */
+      const watch = (owner, name) => {
+        const original = owner[name];
+        owner[name] = function (/** @type {unknown[]} */ ...args) {
+          const result = original.apply(this, args);
+          if (!inside) {
+            inside = true;
+            try {
+              scan(this);
+              scan(args);
+              scan(result);
+            } finally {
+              inside = false;
+            }
+          }
+          return result;
+        };
+      };
+      watch(Object, 'entries');
+      watch(Object, 'keys');
+      watch(Object, 'assign');
+      watch(JSON, 'parse');
+      watch(JSON, 'stringify');
+      for (const name of ['filter', 'map', 'find', 'includes', 'some', 'forEach']) {
+        watch(Array.prototype, name);
+      }
+      for (const name of ['includes', 'startsWith', 'indexOf', 'replace', 'split']) {
+        watch(String.prototype, name);
+      }
+      watch(Element.prototype, 'attachShadow');
+    });
+    const watched = `${site.origin}/xredirect`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.waitForURL(`http://other.test:${site.port}/login`, { timeout: 30_000 });
+    await expect(page).toHaveTitle(ALARM);
+    await expect(widget(page).getByRole('alert')).toContainText('127.0.0.1');
+    expect(await page.evaluate(() => window.leaks)).toEqual([]);
+  });
+});
+
 test("reloading another site's page while the watched page reloads raises no alarm", async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
@@ -692,7 +757,41 @@ test('a pending alarm stays with the tab when it moves to another page of the si
   });
 });
 
-test('page JavaScript cannot read watches', async () => {
+const INJECT_CONTENT = '// @inject-into   content';
+
+/**
+ * Forces the script into the page's own JavaScript world, which is where a manager that ignores
+ * `@inject-into` runs it.
+ * @param {string} text
+ */
+function inPageWorld(text) {
+  if (!text.includes(INJECT_CONTENT)) throw new Error('script has no @inject-into content');
+  return text.replace(INJECT_CONTENT, '// @inject-into   page');
+}
+
+test("a page that wraps attachShadow first never gets the panel's shadow root", async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.addInitScript(() => {
+      /** @type {ShadowRoot[]} */
+      const roots = [];
+      Object.assign(window, { capturedRoots: roots });
+      const attach = Element.prototype.attachShadow;
+      Element.prototype.attachShadow = function (init) {
+        const root = attach.call(this, init);
+        roots.push(root);
+        return root;
+      };
+    });
+    await page.goto(`${site.origin}/appear?private`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+    await expect.poll(() => countdown(page), { timeout: 15_000 }).not.toBeNull();
+    expect(await page.evaluate(() => window.capturedRoots.length)).toBe(0);
+  });
+});
+
+test('in the page world, page JavaScript cannot press the panel buttons', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
     const watched = `${site.origin}/appear?private`;
@@ -700,9 +799,9 @@ test('page JavaScript cannot read watches', async () => {
     await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
     await expect(page).toHaveTitle(WATCHING);
 
-    await vm.install(source);
-    // The script runs in the page's own JavaScript world, so a page that wraps attachShadow
-    // before the script runs receives even a closed shadow root.
+    await vm.install(inPageWorld(source));
+    // In the page's own JavaScript world, a page that wraps attachShadow before the script runs
+    // receives even a closed shadow root.
     await page.addInitScript(() => {
       /** @type {ShadowRoot[]} */
       const roots = [];
@@ -906,42 +1005,50 @@ test('insistent alert style repeats the desktop notification until Acknowledge',
   });
 });
 
+/**
+ * Puts a stand-in for the browser's notifications into the script's own world, where the page
+ * can't reach it. It keeps its record in session storage, which the page shares, and a
+ * `test-notification-click` event on the document selects the latest notification.
+ * @param {string} text
+ */
+function withFakeNotification(text) {
+  const start = "(() => {\n  'use strict';\n";
+  if (!text.includes(start)) throw new Error('script does not start as expected');
+  const fake = `
+  window.Notification = class extends EventTarget {
+    static get permission() {
+      return sessionStorage.getItem('test-notification-permission') ?? 'default';
+    }
+    static requestPermission() {
+      sessionStorage.setItem('test-notification-permission', 'granted');
+      return Promise.resolve(this.permission);
+    }
+    static update(change) {
+      const record = JSON.parse(
+        sessionStorage.getItem('test-notification-record') ?? '{"created":[],"closed":0}',
+      );
+      change(record);
+      sessionStorage.setItem('test-notification-record', JSON.stringify(record));
+    }
+    constructor(title, options) {
+      super();
+      window.Notification.update((record) => record.created.push({ title, options }));
+      document.addEventListener(
+        'test-notification-click',
+        () => this.dispatchEvent(new Event('click')),
+      );
+    }
+    close() {
+      window.Notification.update((record) => (record.closed += 1));
+    }
+  };
+`;
+  return text.replace(start, start + fake);
+}
+
 test('with permission, the alarm uses a site notification that asks to stay until clicked', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
-    // Stands in for the browser's notifications, which the script uses from the page's world.
-    await page.addInitScript(() => {
-      /** @type {{ created: { title: string, options: NotificationOptions }[], closed: number }} */
-      const record = { created: [], closed: 0 };
-      /** @type {EventTarget[]} */
-      const instances = [];
-      class FakeNotification extends EventTarget {
-        static get permission() {
-          return sessionStorage.getItem('test-notification-permission') ?? 'default';
-        }
-        static requestPermission() {
-          sessionStorage.setItem('test-notification-permission', 'granted');
-          return Promise.resolve(FakeNotification.permission);
-        }
-        /**
-         * @param {string} title
-         * @param {NotificationOptions} options
-         */
-        constructor(title, options) {
-          super();
-          record.created.push({ title, options });
-          instances.push(this);
-        }
-        close() {
-          record.closed += 1;
-        }
-      }
-      Object.assign(window, {
-        Notification: FakeNotification,
-        notificationRecord: record,
-        notificationInstances: instances,
-      });
-    });
     await page.goto(`${site.origin}/appear`);
     const sent = await countNotificationsSent(vm);
 
@@ -956,7 +1063,15 @@ test('with permission, the alarm uses a site notification that asks to stay unti
     await expect(panel).toBeHidden();
 
     await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
-    const record = () => page.evaluate(() => window.notificationRecord);
+    const record = () =>
+      page.evaluate(
+        () =>
+          /** @type {{ created: { title: string, options: NotificationOptions }[], closed: number }} */ (
+            JSON.parse(
+              sessionStorage.getItem('test-notification-record') ?? '{"created":[],"closed":0}',
+            )
+          ),
+      );
     await expect.poll(async () => (await record()).created.length).toBe(1);
     const [notification] = (await record()).created;
     expect(notification.title).toBe('Reload Until: the page changed');
@@ -965,12 +1080,12 @@ test('with permission, the alarm uses a site notification that asks to stay unti
     expect(notification.options.body).not.toMatch(/critical/i);
     expect(await sent(), 'manager notifications').toBe(0);
 
-    await page.evaluate(() => window.notificationInstances[0].dispatchEvent(new Event('click')));
+    await page.evaluate(() => document.dispatchEvent(new Event('test-notification-click')));
     await expect.poll(async () => (await record()).closed, 'closed by selecting it').toBe(1);
     await expect(page).toHaveTitle(ALARM);
     await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
     await expect.poll(async () => (await record()).closed).toBe(2);
-  });
+  }, withFakeNotification);
 });
 
 /**

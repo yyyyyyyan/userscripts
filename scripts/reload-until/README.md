@@ -256,13 +256,15 @@ It asks your userscript manager for these permissions:
 - When a reload ends on another site, the alarm there names only the watched
   site, not the full address. If you select **Open watched page**, that site's
   page can see where the tab goes next, as with any link you follow from it.
-- Your userscript manager may run the script inside the page's own JavaScript.
-  A page built to spy on userscripts could then see what the script does on
-  it, such as the alarm text, and the addresses of all your watches if you open
-  the settings there. If a reload ends on such a page, it could also see the
-  full address of the watch whose alarm it shows, even though the alarm names
-  only the site. The panel itself shows only the current site's watches,
-  and the script ignores clicks that a page fakes with its own scripts.
+- The script runs in its own JavaScript world, apart from the page's scripts.
+  A page can see that the box is there, but not what's inside it, and it can't
+  watch what the script does or read your watches through its own code. The
+  panel shows only the current site's watches, and the script ignores clicks
+  that a page fakes with its own scripts.
+- Violentmonkey before 2.10 and Tampermonkey before 4.18 run the script inside
+  the page's own JavaScript instead. There, a page built to spy on userscripts
+  could see what the script does on it, including the full address of a watch
+  whose reload ended on that page.
 - If your manager syncs or backs up its data, your watches go with it. That is
   the manager's feature, not this script's.
 
