@@ -5,7 +5,7 @@ and remembers your choice for that site. It switches to the theme the site
 already has. It never generates or inverts colors, so it is not a dark mode for
 sites that don't have one.
 
-![Python's documentation twice, side by side. On the left the page is light, with your browser in light and no choice saved. On the right the same page is dark after choosing Dark for the site.](images/before-after.png)
+![Python's documentation twice, side by side. On the left the page is light, with your browser in light and no choice saved. On the right the same page is dark after selecting Dark for the site.](images/before-after.png)
 
 It helps on sites that have both a light and a dark theme and follow your
 browser's setting. Tested on react.dev, developer.mozilla.org, github.com,
@@ -39,9 +39,9 @@ follows your browser again.
 There is no settings page. The menu is the only control, and it saves one choice
 per site:
 
-- **Light**: the site shows its light theme.
-- **Dark**: the site shows its dark theme.
-- **Browser default**: the script does nothing on that site.
+- Light: the site shows its light theme.
+- Dark: the site shows its dark theme.
+- Browser default: the script does nothing on that site.
 
 The menu marks your current choice with a check mark, and it names the site the
 choice is saved for.
@@ -49,7 +49,7 @@ choice is saved for.
 A choice also covers the site's subdomains. If you select Dark on `example.com`,
 then `www.example.com` and `docs.example.com` use Dark too. To give one
 subdomain a different theme, open that subdomain and select again. A choice
-saved on a subdomain wins over the one from its parent. **Browser default** on a
+saved on a subdomain wins over the one from its parent. Browser default on a
 subdomain makes it ignore the parent's choice.
 
 A choice always saves on the site you are on, never on its parent. The one
@@ -60,8 +60,7 @@ themselves.
 ## Where it runs and what it can access
 
 The script runs on every `http` and `https` page, because you can pick any site.
-On a site where you have not made a choice, it does nothing. It does not run
-inside frames, so embedded content, such as a video player, is left alone.
+On a site where you have not made a choice, it does nothing.
 
 It asks your userscript manager for these permissions:
 
@@ -87,15 +86,15 @@ network requests.
   the site's own theme to System or Automatic may help.
 - A site that saves your theme with your account, or in its own button, decides
   for itself. The script does not override it.
-- Closed shadow roots that a page creates before the script runs are not
-  reached. Parts of a page built that way may not switch.
-- It does not change embedded frames.
+- It can't reach parts of some pages built as sealed components before it
+  runs. Those parts may not switch.
+- It does not run inside frames, so embedded content, such as a video player,
+  is left alone.
 - You may see the other theme for a moment before the page switches.
 - On pages that are not HTML, your manager can't run the script inside the page
   itself, so the page's own scripts may still see your browser's setting.
   **Status** says so. In Firefox, a site with a strict Content Security Policy
-  may cause the same problem. **Status** is meant to say so there too, but this
-  has had less testing.
+  may cause the same problem. **Status** should say so there too.
 - It works in Violentmonkey and Tampermonkey. It does not work in Greasemonkey 4
   or in Safari's Userscripts.
 
