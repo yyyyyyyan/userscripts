@@ -1,0 +1,60 @@
+name: Bug report
+description: A script does something wrong or stops working.
+labels: [bug]
+body:
+  - type: dropdown
+    id: script
+    attributes:
+      label: Script
+      options:
+        - per-site-light-dark-mode
+        - reload-until
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Userscript manager
+      options:
+        - Violentmonkey
+        - Tampermonkey
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: manager-version
+    attributes:
+      label: Userscript manager version
+      placeholder: "2.31.0"
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: Firefox 140
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: Page address
+      description: The address of the page where the problem happens.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        1. Open the page.
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Open the browser's developer tools, select Console, and paste any errors.
+      render: text
