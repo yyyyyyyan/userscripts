@@ -111,6 +111,42 @@ checked:
   applies or **Status** reports that the script could not run inside the page.
   This path has no automated test.
 
+### Extra checks for Reload Until
+
+The automated tests run Reload Until in Violentmonkey on Chromium only, on
+local test pages. Add these lines to its checklist:
+
+```markdown
+- [ ] A real ticket- or stock-style page of your choosing: the alarm goes off
+      when the part you watch changes.
+- [ ] Your own sign-in case: while a watch runs, let the session expire or
+      sign out in another tab. The alarm goes off on the page where the reload
+      ended, and **Open watched page** takes you back.
+- [ ] Firefox and Chromium, after **Allow desktop notifications** in the
+      settings panel: an alarm's desktop notification stays on screen, without
+      disappearing after a few seconds, until **Acknowledge** closes it.
+- [ ] Firefox and Chromium, on a site where notifications aren't allowed: the
+      alarm still shows a desktop notification (from the userscript manager).
+- [ ] Firefox: an alarm with the insistent alert style repeats its desktop
+      notification about once a minute, and **Acknowledge** stops it.
+- [ ] Chromium and Firefox: selecting an alarm's desktop notification, from the
+      site and from the manager, brings its tab to the front, or the README's
+      "may" is still accurate.
+- [ ] Chromium and Firefox: with the insistent style, let the alarm go off
+      after a few automatic reloads without touching the page. Note whether the
+      sound plays, or whether the box says it may be blocked and what it tells
+      you to do.
+- [ ] Firefox: on a site with a strict Content Security Policy, such as
+      github.com, the settings panel and the alarm are styled.
+- [ ] Firefox: a reload that a server redirects to another site raises the
+      alarm on the page where it ended.
+- [ ] Tampermonkey: an alarm shows its desktop notification, and
+      **Acknowledge** clears the alarm on the page.
+- [ ] Tampermonkey: after a fresh install, the first page shows the one-time
+      tip, and the command it names appears in Tampermonkey's menu with the
+      same words.
+```
+
 While the repository is private, raw files need a sign-in, so a pull request's
 file can't be installed from its address. Install from a local copy instead:
 check out the release branch and paste the script file into a new script in your

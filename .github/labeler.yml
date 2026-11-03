@@ -1,0 +1,38 @@
+'script: per-site-light-dark-mode':
+  - changed-files:
+      - any-glob-to-any-file: 'scripts/per-site-light-dark-mode/**'
+
+'script: reload-until':
+  - changed-files:
+      - any-glob-to-any-file: 'scripts/reload-until/**'
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.md'
+          - 'docs/**'
+          - '.github/ISSUE_TEMPLATE/**'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/labeler.yml'
+          - '.github/dependabot.yml'
+
+tooling:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'tools/**'
+          - 'tests/**'
+          - 'package.json'
+          - 'package-lock.json'
+          - '*.config.mjs'
+          - '.pre-commit-config.yaml'
+          - '.oxlintrc.json'
+          - '.oxfmtrc.json'
+          - 'jsconfig.json'
+          - '_typos.toml'
+          - '.rumdl.toml'
+          - '.vale.ini'
+          - '.vale/**'

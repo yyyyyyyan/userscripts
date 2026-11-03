@@ -9,8 +9,9 @@ as it is released.
 | Script | What it does | Where it runs | Install |
 |---|---|---|---|
 | [Per-Site Light/Dark Mode](scripts/per-site-light-dark-mode/README.md) | Asks each site for its own light or dark theme, remembered per site. | Every website | [Install][per-site] |
+| [Reload Until](scripts/reload-until/README.md) | Reloads a page until something appears or disappears, then raises an alarm. | Every website | Coming soon |
 
-Later scripts get a row in this table when they are released.
+A script's install link replaces "Coming soon" when it is released.
 
 [per-site]: https://greasyfork.org/en/scripts/603623-per-site-light-dark-mode
 
