@@ -17,7 +17,7 @@
     "@playwright/test": "1.64.1",
     "@violentmonkey/types": "0.3.4",
     "eslint-plugin-userscripts": "0.5.6",
-    "oxfmt": "0.74.0",
+    "oxfmt": "0.75.0",
     "oxlint": "1.89.0",
     "typescript": "7.0.2"
   },
