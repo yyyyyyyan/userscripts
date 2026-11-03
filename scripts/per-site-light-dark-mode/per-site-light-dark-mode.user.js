@@ -242,6 +242,8 @@
     return typeof exportFunction === 'function' ? exportFunction(fn, page) : fn;
   }
 
+  const nativeReplaceSync = page.CSSStyleSheet?.prototype.replaceSync;
+
   try {
     page.matchMedia = share(function matchMedia(/** @type {unknown} */ query) {
       if (arguments.length === 0) return nativeMatchMedia.call(page);
@@ -272,40 +274,71 @@
   }
 
   /**
-   * @typedef {CSSRule & { media?: MediaList, styleSheet?: CSSStyleSheet, cssRules?: CSSRuleList }} NestedRule
+   * @typedef {CSSRule & { media?: MediaList, styleSheet?: CSSStyleSheet | null, cssRules?: CSSRuleList }} NestedRule
    */
 
   /**
-   * @param {CSSRuleList | CSSRule[]} rules
-   * @param {Set<CSSStyleSheet>} visited
+   * Rule count of each sheet when it was last walked. Rules added later through the hooked
+   * `insertRule` are walked one by one, so a sheet is walked again only when its count changed
+   * some other way.
+   * @type {WeakMap<CSSStyleSheet, number>}
    */
-  function walkRules(rules, visited) {
-    for (const rule of /** @type {Iterable<NestedRule>} */ (rules)) {
+  const processed = new WeakMap();
+
+  const IMPORT_RULE = 3;
+  const MEDIA_RULE = 4;
+  const KEYFRAMES_RULE = 7;
+
+  /**
+   * Reads as few properties as it can per rule, because each read can make the browser create
+   * an object, and large sites have tens of thousands of rules.
+   * @param {CSSRuleList | CSSRule[]} rules
+   */
+  function walkRules(rules) {
+    for (let i = 0, count = rules.length; i < count; i++) {
+      const rule = /** @type {NestedRule} */ (rules[i]);
       try {
-        fixMedia(rule.media);
-        if (rule.styleSheet) processSheet(rule.styleSheet, visited);
-        if (rule.cssRules) walkRules(rule.cssRules, visited);
+        const type = rule.type;
+        if (type === MEDIA_RULE || type === IMPORT_RULE) fixMedia(rule.media);
+        if (type === IMPORT_RULE) processSheet(rule.styleSheet);
+        else if (type !== KEYFRAMES_RULE) {
+          const nested = rule.cssRules;
+          if (nested && nested.length > 0) walkRules(nested);
+        }
       } catch (error) {
         console.debug(LOG, 'Could not adjust a CSS rule.', error);
       }
     }
   }
 
-  /**
-   * @param {CSSStyleSheet | null | undefined} sheet
-   * @param {Set<CSSStyleSheet>} [visited]
-   */
-  function processSheet(sheet, visited = new Set()) {
-    if (!sheet || visited.has(sheet)) return;
-    visited.add(sheet);
+  /** @param {CSSStyleSheet | null | undefined} sheet */
+  function processSheet(sheet) {
+    if (!sheet) return;
     try {
+      const rules = sheet.cssRules;
+      if (processed.get(sheet) === rules.length) {
+        // An imported sheet can finish loading after the sheet that imports it. Imports come
+        // before every other rule except `@layer` statements, so the loop stops early.
+        for (const rule of /** @type {Iterable<NestedRule>} */ (rules)) {
+          if ('styleSheet' in rule) processSheet(rule.styleSheet);
+          else if (!('nameList' in rule)) break;
+        }
+        return;
+      }
       fixMedia(sheet.media);
-      walkRules(sheet.cssRules, visited);
+      walkRules(rules);
+      processed.set(sheet, rules.length);
     } catch (error) {
       if (/** @type {Error} */ (error).name === 'SecurityError')
         blockedSheets.add(sheet.href || '(unreadable stylesheet)');
       else console.debug(LOG, 'Could not adjust a stylesheet.', error);
     }
+  }
+
+  /** @param {CSSStyleSheet} sheet */
+  function reprocessSheet(sheet) {
+    processed.delete(sheet);
+    processSheet(sheet);
   }
 
   function pinApplied() {
@@ -329,9 +362,7 @@
           (sheet) => sheet !== pinSheet,
         );
       }
-      const meta = /** @type {HTMLMetaElement | null} */ (
-        document.querySelector('meta[name="color-scheme" i]')
-      );
+      const meta = /** @type {HTMLMetaElement | null} */ (document.querySelector(schemeMeta));
       const computed = getComputedStyle(root).colorScheme;
       const declared = computed === 'normal' ? meta?.content || '' : computed;
       const light = /\blight\b/i.test(declared);
@@ -344,7 +375,7 @@
       }
       if (!pinSheet) {
         pinSheet = new page.CSSStyleSheet();
-        pinSheet.replaceSync(`:root { color-scheme: ${mode} !important; }`);
+        Reflect.apply(nativeReplaceSync, pinSheet, [`:root { color-scheme: ${mode} !important; }`]);
       }
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, pinSheet];
       pinDecision = 'pinned';
@@ -370,11 +401,27 @@
     else queueMicrotask(run);
   }
 
-  const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
+  /** @param {unknown} text */
+  function schedulePinFor(text) {
+    if (/color-scheme/i.test(String(text))) schedulePin();
+  }
 
-  /** @param {Element & { sheet?: CSSStyleSheet | null }} element */
+  const selector = 'style, link[rel~="stylesheet"], link[media], source[media]';
+  const schemeMeta = 'meta[name="color-scheme" i]';
+  const schemeSelector = `${selector}, ${schemeMeta}`;
+  const observed = {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['media', 'href', 'rel', 'disabled', 'content'],
+  };
+
+  /**
+   * Rewrites the element's `media` attribute and, for `<style>`, starts watching its text.
+   * @param {Element} element
+   */
   function processElement(element) {
-    if (element.nodeType !== Node.ELEMENT_NODE || !element.matches(selector)) return;
+    if (!element.matches(selector)) return;
     const original = element.getAttribute('media');
     if (original) {
       const next = rewrite(original);
@@ -383,103 +430,194 @@
         status.mediaConditions++;
       }
     }
-    if (element.sheet) processSheet(element.sheet);
+    if (element.localName === 'style')
+      observer.observe(element, { subtree: true, characterData: true });
   }
 
-  /** @param {Node} node */
+  /** @param {Element & { sheet?: CSSStyleSheet | null }} element */
+  function processStyleElement(element) {
+    processElement(element);
+    processSheet(element.sheet);
+  }
+
+  /**
+   * @param {Node} node
+   * @returns {boolean} Whether the subtree holds anything that can change the page's styles.
+   */
   function processSubtree(node) {
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    processElement(/** @type {Element} */ (node));
-    for (const element of /** @type {Element} */ (node).querySelectorAll(selector))
-      processElement(element);
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    const element = /** @type {Element} */ (node);
+    const matches = element.matches(schemeSelector);
+    if (!matches && !element.querySelector(schemeSelector)) return false;
+    if (matches) processStyleElement(element);
+    for (const each of element.querySelectorAll(schemeSelector)) processStyleElement(each);
+    return true;
   }
 
-  function fullScan() {
-    for (const element of document.querySelectorAll(selector)) processElement(element);
-    for (const sheet of document.styleSheets) processSheet(sheet);
-    for (const sheet of document.adoptedStyleSheets || []) processSheet(sheet);
-    pinColorScheme();
+  /** @param {Element} element */
+  function isSchemeMeta(element) {
+    return element.localName === 'meta' && element.matches(schemeMeta);
   }
 
-  // CSS-in-JS may update rules without any observable DOM mutation.
-  for (const name of ['insertRule', 'replaceSync']) {
-    try {
-      const prototype = page.CSSStyleSheet.prototype;
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
-      if (!descriptor || typeof descriptor.value !== 'function') continue;
-      const original = descriptor.value;
-      Object.defineProperty(prototype, name, {
-        ...descriptor,
-        value: share(
-          /**
-           * @this {CSSStyleSheet}
-           * @param {any[]} args
-           */
-          function (...args) {
-            const result = Reflect.apply(original, this, args);
-            if (name === 'insertRule') walkRules([this.cssRules[result]], new Set());
-            else processSheet(this);
-            return result;
-          },
-        ),
-      });
-      status.hooks.push(name);
-    } catch (error) {
-      console.debug(LOG, `${name} hook unavailable.`, error);
-    }
-  }
-
-  new MutationObserver((mutations) => {
+  const observer = new MutationObserver((mutations) => {
     let stylesChanged = false;
     for (const mutation of mutations) {
-      if (mutation.type === 'attributes') {
-        processElement(/** @type {Element} */ (mutation.target));
-        stylesChanged = true;
-      } else if (
-        mutation.target.nodeType === Node.ELEMENT_NODE &&
-        /** @type {Element} */ (mutation.target).localName === 'style'
-      ) {
-        processElement(/** @type {Element} */ (mutation.target));
-        stylesChanged = true;
-      } else if (
-        mutation.type === 'characterData' &&
-        mutation.target.parentElement?.localName === 'style'
-      ) {
-        processElement(mutation.target.parentElement);
+      const target = /** @type {Element} */ (mutation.target);
+      if (mutation.type === 'characterData') {
+        const style = target.parentElement;
+        if (style?.localName === 'style') {
+          processStyleElement(style);
+          stylesChanged = true;
+        }
+      } else if (mutation.type === 'attributes') {
+        if (mutation.attributeName === 'content') {
+          if (isSchemeMeta(target)) stylesChanged = true;
+        } else if (['link', 'style', 'source'].includes(target.localName)) {
+          processStyleElement(target);
+          stylesChanged = true;
+        }
+      } else if (target.localName === 'style') {
+        processStyleElement(target);
         stylesChanged = true;
       } else {
-        for (const node of mutation.addedNodes) {
-          processSubtree(node);
+        for (const node of mutation.addedNodes) if (processSubtree(node)) stylesChanged = true;
+        for (const node of mutation.removedNodes) {
           if (
             node.nodeType === Node.ELEMENT_NODE &&
-            (/** @type {Element} */ (node).matches(selector) ||
-              /** @type {Element} */ (node).querySelector(selector))
-          ) {
+            (/** @type {Element} */ (node).matches(schemeSelector) ||
+              /** @type {Element} */ (node).querySelector(schemeSelector))
+          )
             stylesChanged = true;
-          }
         }
       }
     }
     if (stylesChanged) schedulePin();
-  }).observe(document, {
-    subtree: true,
-    childList: true,
-    characterData: true,
-    attributes: true,
-    attributeFilter: ['media', 'href', 'rel'],
   });
 
-  document.addEventListener(
-    'load',
-    (event) => {
-      const target = /** @type {Element} */ (event.target);
-      if (target.nodeType === Node.ELEMENT_NODE && ['link', 'style'].includes(target.localName)) {
-        processElement(target);
+  /** @param {Event} event */
+  function onLoad(event) {
+    const target = /** @type {Element} */ (event.target);
+    if (target.nodeType === Node.ELEMENT_NODE && ['link', 'style'].includes(target.localName)) {
+      processStyleElement(target);
+      schedulePin();
+    }
+  }
+
+  /** @param {Document | ShadowRoot} root */
+  function scanRoot(root) {
+    for (const element of root.querySelectorAll(selector)) processElement(element);
+    for (const sheet of root.styleSheets) processSheet(sheet);
+    for (const sheet of root.adoptedStyleSheets || []) processSheet(sheet);
+  }
+
+  /**
+   * Watches a shadow root the way the document is watched. It needs its own `load` listener,
+   * because a `load` event inside a shadow tree does not reach the document.
+   * @param {ShadowRoot} root
+   */
+  function watchShadowRoot(root) {
+    observer.observe(root, observed);
+    root.addEventListener('load', onLoad, true);
+    scanRoot(root);
+  }
+
+  /** @param {Document | ShadowRoot} root */
+  function scanShadowRoots(root) {
+    for (const element of root.querySelectorAll('*')) {
+      if (!element.shadowRoot) continue;
+      watchShadowRoot(element.shadowRoot);
+      scanShadowRoots(element.shadowRoot);
+    }
+  }
+
+  function fullScan() {
+    scanRoot(document);
+    scanShadowRoots(document);
+    schedulePin();
+  }
+
+  let hooking = false;
+
+  /**
+   * Replaces `owner[name]` so `after` runs once the page's own call has returned. A call made
+   * while `after` is running, such as from another of these hooks, is passed straight through.
+   * @param {object | undefined} owner A prototype, missing in browsers without the interface.
+   * @param {string} name
+   * @param {(self: any, result: any, args: any[]) => void} after
+   * @param {'value' | 'set'} [slot]
+   */
+  function hook(owner, name, after, slot = 'value') {
+    if (!owner) return;
+    const label = `${/** @type {Function} */ (owner.constructor).name}.${name}`;
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+      const original = descriptor?.[slot];
+      if (!descriptor || typeof original !== 'function') return;
+      Object.defineProperty(owner, name, {
+        ...descriptor,
+        [slot]: share(
+          /**
+           * @this {unknown}
+           * @param {any[]} args
+           */
+          function (...args) {
+            const result = Reflect.apply(original, this, args);
+            if (hooking) return result;
+            hooking = true;
+            try {
+              after(this, result, args);
+            } catch (error) {
+              console.debug(LOG, `Could not follow ${label}.`, error);
+            } finally {
+              hooking = false;
+            }
+            return result;
+          },
+        ),
+      });
+      status.hooks.push(label);
+    } catch (error) {
+      console.debug(LOG, `${label} hook unavailable.`, error);
+    }
+  }
+
+  // CSS-in-JS may update rules without any observable DOM mutation.
+  hook(page.CSSStyleSheet?.prototype, 'insertRule', (sheet, index, [text]) => {
+    const rules = /** @type {CSSStyleSheet} */ (sheet).cssRules;
+    walkRules([rules[index]]);
+    if (processed.get(sheet) === rules.length - 1) processed.set(sheet, rules.length);
+    schedulePinFor(text);
+  });
+  hook(page.CSSGroupingRule?.prototype, 'insertRule', (rule, index, [text]) => {
+    walkRules([/** @type {CSSGroupingRule} */ (rule).cssRules[index]]);
+    schedulePinFor(text);
+  });
+  hook(page.CSSStyleSheet?.prototype, 'replaceSync', (sheet) => {
+    reprocessSheet(sheet);
+    schedulePin();
+  });
+  hook(page.CSSStyleSheet?.prototype, 'replace', (sheet, promise) => {
+    /** @type {Promise<unknown>} */ (promise).then(
+      () => {
+        reprocessSheet(sheet);
         schedulePin();
-      }
+      },
+      () => {},
+    );
+  });
+  hook(page.Element?.prototype, 'attachShadow', (_host, root) => watchShadowRoot(root));
+  hook(
+    page.ShadowRoot?.prototype,
+    'adoptedStyleSheets',
+    (root) => {
+      for (const sheet of /** @type {ShadowRoot} */ (root).adoptedStyleSheets) processSheet(sheet);
     },
-    true,
+    'set',
   );
+
+  observer.observe(document, observed);
+  document.addEventListener('load', onLoad, true);
+
   /** @param {Element} root */
   function watchRoot(root) {
     // The root of an XML document, such as a news feed, has no inline style.

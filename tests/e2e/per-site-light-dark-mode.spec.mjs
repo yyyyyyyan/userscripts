@@ -1,3 +1,4 @@
+import process from 'node:process';
 import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 
@@ -185,6 +186,65 @@ test('CSS media rules follow the saved choice in both directions', async () => {
   });
 });
 
+test('styles inside an open shadow root follow the choice', async () => {
+  const read = (/** @type {Page} */ page) =>
+    page.evaluate(() => {
+      const early = document.getElementById('early')?.shadowRoot;
+      const late = document.getElementById('late');
+      if (!early || !late) throw new Error('fixture is missing a shadow host');
+      if (!late.shadowRoot) late.attachShadow({ mode: 'open' }).innerHTML = early.innerHTML;
+      return [early, late.shadowRoot].map((root) => {
+        const paragraph = root?.querySelector('p');
+        return paragraph ? getComputedStyle(paragraph).backgroundColor : '';
+      });
+    });
+  await followsSavedChoice(await fixture('shadow-root.html'), read, {
+    light: [WHITE, WHITE],
+    dark: [BLACK, BLACK],
+  });
+});
+
+test('a rule added later with insertRule follows the choice', async () => {
+  const read = (/** @type {Page} */ page) =>
+    page.evaluate(() => {
+      const sheet = /** @type {HTMLStyleElement} */ (document.getElementById('sheet')).sheet;
+      if (!sheet) throw new Error('fixture has no style sheet');
+      if (sheet.cssRules.length === 2) {
+        const nested = /** @type {CSSGroupingRule} */ (sheet.cssRules[1]);
+        nested.insertRule(
+          '@media (prefers-color-scheme: dark) { body { background: rgb(0, 0, 0) } }',
+          0,
+        );
+        sheet.insertRule(
+          '@media (prefers-color-scheme: dark) { body { color: rgb(255, 255, 255) } }',
+          2,
+        );
+      }
+      const { backgroundColor, color } = getComputedStyle(document.body);
+      return { backgroundColor, color };
+    });
+  await followsSavedChoice(await fixture('late-rules.html'), read, {
+    light: { backgroundColor: WHITE, color: BLACK },
+    dark: { backgroundColor: BLACK, color: WHITE },
+  });
+});
+
+test('a constructed stylesheet added with replace follows the choice', async () => {
+  const read = (/** @type {Page} */ page) =>
+    page.evaluate(async () => {
+      if (!document.body.dataset.adopted) {
+        document.body.dataset.adopted = 'yes';
+        const sheet = new CSSStyleSheet();
+        await sheet.replace(
+          '@media (prefers-color-scheme: dark) { body { background: rgb(0, 0, 0) } }',
+        );
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      }
+      return getComputedStyle(document.body).backgroundColor;
+    });
+  await followsSavedChoice(await fixture('late-rules.html'), read, { light: WHITE, dark: BLACK });
+});
+
 test('a site that declares automatic through inline style follows the saved choice', async () => {
   await followsSavedChoice(await fixture('ld-js.html'), backgroundOf, {
     light: WHITE,
@@ -318,6 +378,258 @@ test('class toggles on html are re-checked at most once per frame', async () => 
     expect(assignments).toBeGreaterThan(0);
     expect(assignments).toBeLessThanOrEqual(2 * (frames + 1));
     expect(await backgroundOf(page)).toBe(BLACK);
+  });
+});
+
+test('changing link targets on the page causes no re-checks', async () => {
+  await withSite(await fixture('ld-toggle.html'), async (ctx) => {
+    const page = await settledDarkPage(ctx);
+    const assignments = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const counter = window['__adoptedAssignments'];
+          const link = document.body.appendChild(document.createElement('a'));
+          const before = counter.count;
+          let n = 0;
+          const tick = () => {
+            link.href = `#section-${n}`;
+            if (++n < 30) requestAnimationFrame(tick);
+            else requestAnimationFrame(() => resolve(counter.count - before));
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    expect(assignments).toBeLessThanOrEqual(2);
+    expect(await backgroundOf(page)).toBe(BLACK);
+  });
+});
+
+/**
+ * @param {string} text
+ * @returns {(req: Request, res: Response) => void}
+ */
+const stylesheet = (text) => (_req, res) => {
+  res.writeHead(200, { 'content-type': 'text/css' });
+  res.end(text);
+};
+
+const LINK_TOGGLE_ROUTES = {
+  '/both.css': stylesheet(':root { color-scheme: light dark; }'),
+  '/light.css': stylesheet(':root { color-scheme: light; }'),
+};
+
+/**
+ * @type {Array<[string, string, Record<string, string | ((req: Request, res: Response) => void)>, () => unknown, { before: string, after: string }]>}
+ */
+const SCHEME_CHANGES = [
+  [
+    'insertRule',
+    'ld-toggle.html',
+    {},
+    () => {
+      const sheet = document.styleSheets[0];
+      sheet.insertRule(':root { color-scheme: light }', sheet.cssRules.length);
+    },
+    { before: BLACK, after: WHITE },
+  ],
+  [
+    'replaceSync',
+    'ld-toggle.html',
+    {},
+    () => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(':root { color-scheme: light }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    },
+    { before: BLACK, after: WHITE },
+  ],
+  [
+    'replace',
+    'ld-toggle.html',
+    {},
+    async () => {
+      const sheet = new CSSStyleSheet();
+      await sheet.replace(':root { color-scheme: light }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    },
+    { before: BLACK, after: WHITE },
+  ],
+  [
+    'a color-scheme meta tag',
+    'meta-scheme.html',
+    {},
+    () => {
+      const meta = document.querySelector('meta[name="color-scheme"]');
+      if (meta) meta.setAttribute('content', 'light');
+    },
+    { before: BLACK, after: WHITE },
+  ],
+  [
+    'link.disabled',
+    'link-toggle.html',
+    LINK_TOGGLE_ROUTES,
+    () => {
+      const link = /** @type {HTMLLinkElement} */ (document.getElementById('light'));
+      link.disabled = true;
+    },
+    { before: WHITE, after: BLACK },
+  ],
+];
+
+for (const [how, name, routes, change, expected] of SCHEME_CHANGES) {
+  test(`a color scheme the site changes with ${how} is re-checked`, async () => {
+    await withSites({ routes: { '/': await fixture(name), ...routes } }, async ({ vm, open }) => {
+      const page = await open('light');
+      await choose(vm.context, vm.extensionId, page, 'Dark for');
+      await expect.poll(() => backgroundOf(page)).toBe(expected.before);
+      await page.waitForTimeout(300);
+      await page.evaluate(change);
+      await expect.poll(() => backgroundOf(page)).toBe(expected.after);
+    });
+  });
+}
+
+const LONGEST_RUN_MS = 60;
+const TOTAL_MS = 100;
+
+/**
+ * Builds a page shaped like a large real site: about 27,000 rules, one in eleven of them a
+ * `prefers-color-scheme` block, split between a linked sheet and an inline one.
+ * @returns {{ html: string, css: string }}
+ */
+function largePage() {
+  /** @param {number} from @param {number} to */
+  const rules = (from, to) => {
+    const lines = [];
+    for (let i = from; i < to; i++) {
+      const color = ((i * 2654435761) >>> 8) & 0xffffff;
+      lines.push(`.c${i}{color:#${color.toString(16).padStart(6, '0')};margin:${i % 7}px}`);
+      if (i % 10 === 0) lines.push(`@media (prefers-color-scheme: dark){.c${i}{color:#fff}}`);
+    }
+    return lines.join('\n');
+  };
+  const rows = Array.from({ length: 2000 }, (_, i) => `<div class="c${i}">row ${i}</div>`);
+  return {
+    css: rules(0, 20000),
+    html: [
+      '<!doctype html><html><head><meta charset="utf-8"><title>large</title>',
+      `<link rel="stylesheet" href="/large.css"><style>${rules(0, 4544)}</style></head>`,
+      `<body>${rows.join('')}</body></html>`,
+    ].join('\n'),
+  };
+}
+
+/**
+ * Times the script's work while the page loads, as separate runs: its first synchronous run,
+ * from its `matchMedia` replacement until control returns to the event loop, and every
+ * mutation observer callback and `load` or `DOMContentLoaded` listener it sets up. Those
+ * callbacks are wrapped only once the script runs, because Violentmonkey does not inject into
+ * a page whose built-ins were already replaced.
+ */
+function timeScriptWork() {
+  const own =
+    Object.getOwnPropertyDescriptor(window, 'matchMedia') ??
+    Object.getOwnPropertyDescriptor(Window.prototype, 'matchMedia');
+  let current = own?.value;
+  /** @type {{ readyState: string, runs: number, longest: number, total: number } | undefined} */
+  let work;
+  Object.defineProperty(window, '__scriptWork', { get: () => work });
+
+  /** @param {number} start */
+  const record = (start) => {
+    if (!work) return;
+    const ms = performance.now() - start;
+    work.runs++;
+    work.total += ms;
+    work.longest = Math.max(work.longest, ms);
+  };
+
+  /** @param {Function} callback @returns {any} */
+  const timed = (callback) =>
+    function (/** @type {any[]} */ ...args) {
+      const start = performance.now();
+      try {
+        return Reflect.apply(callback, this, args);
+      } finally {
+        record(start);
+      }
+    };
+
+  function timeCallbacks() {
+    const NativeObserver = window.MutationObserver;
+    window.MutationObserver = class extends NativeObserver {
+      /** @param {MutationCallback} callback */
+      constructor(callback) {
+        super(timed(callback));
+      }
+    };
+    const addEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (type, listener, options) {
+      const timedListener =
+        typeof listener === 'function' && ['load', 'DOMContentLoaded'].includes(type)
+          ? timed(listener)
+          : listener;
+      return addEventListener.call(this, type, timedListener, options);
+    };
+  }
+
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    enumerable: own?.enumerable ?? true,
+    get: () => current,
+    set(value) {
+      current = value;
+      if (work) return;
+      const start = performance.now();
+      work = { readyState: document.readyState, runs: 0, longest: 0, total: 0 };
+      queueMicrotask(() => record(start));
+      timeCallbacks();
+    },
+  });
+}
+
+test('the script walks a page with 27,000 rules quickly', async () => {
+  const { html, css } = largePage();
+  const routes = { '/': PLAIN_PAGE, '/large': html, '/large.css': stylesheet(css) };
+  await withSites({ routes }, async ({ vm, open }) => {
+    const setup = await open('light');
+    await choose(vm.context, vm.extensionId, setup, 'Dark for');
+    const url = new URL('/large', setup.url()).href;
+    await setup.close();
+
+    const loads = [];
+    for (let i = 0; i < 3; i++) {
+      const page = await vm.context.newPage();
+      await page.addInitScript(timeScriptWork);
+      await page.emulateMedia({ colorScheme: 'light' });
+      await page.goto(url);
+      await expect
+        .poll(() => page.evaluate(() => getComputedStyle(document.body.children[0]).color))
+        .toBe(WHITE);
+      const work = await page.evaluate(() => window['__scriptWork']);
+      expect(work?.runs).toBeGreaterThan(0);
+      loads.push(work);
+      await page.close();
+    }
+
+    /** @param {number[]} values */
+    const median = (values) => values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)];
+    const longest = median(loads.map((work) => work.longest));
+    const total = median(loads.map((work) => work.total));
+    for (const work of loads) {
+      test.info().annotations.push({
+        type: 'script work',
+        description: [
+          `longest run ${work.longest.toFixed(1)} ms`,
+          `${work.total.toFixed(1)} ms over ${work.runs} runs`,
+          `injected while ${work.readyState}`,
+        ].join(', '),
+      });
+    }
+    if (!process.env.CI) {
+      expect(longest).toBeLessThan(LONGEST_RUN_MS);
+      expect(total).toBeLessThan(TOTAL_MS);
+    }
   });
 });
 
