@@ -732,6 +732,22 @@ test('a choice made on a www host is saved for the site without www', async () =
   );
 });
 
+test('with no saved choice the script replaces nothing on the page', async () => {
+  await withSite(await fixture('media-rule.html'), async ({ vm, open }) => {
+    const page = await open('light');
+    expect(await menuEntries(vm, page)).toContain('Status');
+    const sources = await page.evaluate(() =>
+      [
+        window.matchMedia,
+        CSSStyleSheet.prototype.insertRule,
+        CSSStyleSheet.prototype.replaceSync,
+        Element.prototype.attachShadow,
+      ].map(String),
+    );
+    for (const source of sources) expect(source).toContain('[native code]');
+  });
+});
+
 test('menu has four entries and marks the active one', async () => {
   await withSite(PLAIN_PAGE, async ({ vm, open }) => {
     const page = await open('light');
