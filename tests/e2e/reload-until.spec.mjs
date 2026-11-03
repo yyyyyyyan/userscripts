@@ -408,6 +408,43 @@ test('cross-origin redirect shows only the watched host', async () => {
       '/xredirect',
     );
     await expectRedirectStored(vm, watched, `http://other.test:${site.port}/login`);
+
+    const reopened = page.waitForRequest(watched);
+    await widget(page).getByRole('button', { name: 'Open watched page' }).click();
+    await reopened;
+  });
+});
+
+test("reloading another site's page while the watched page reloads raises no alarm", async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/slow`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    await expect(page).toHaveTitle(WATCHING);
+    const other = await vm.context.newPage();
+    await other.goto(`http://other.test:${site.port}/plain`);
+
+    // The watched page answers slowly, so this reload ends while the handoff is still stored.
+    await page.waitForRequest(watched, { timeout: 30_000 });
+    await other.reload();
+    await expect(other).toHaveTitle('Plain');
+    await other.waitForTimeout(5000);
+
+    await expect(other).toHaveTitle('Plain');
+    await expect(widget(other)).toHaveCount(0);
+    await expect(page).toHaveTitle(WATCHING);
+    await expect
+      .poll(async () => {
+        const stored = await storedValues(vm);
+        const watch = /** @type {{ enabled?: boolean } | undefined} */ (stored[`watch:${watched}`]);
+        return {
+          pendingAlert: pendingAlertOf(stored, `watch:${watched}`),
+          enabled: watch?.enabled,
+          handoff: stored.handoff,
+        };
+      })
+      .toEqual({ pendingAlert: null, enabled: true, handoff: undefined });
   });
 });
 

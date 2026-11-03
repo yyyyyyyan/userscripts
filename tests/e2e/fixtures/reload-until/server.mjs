@@ -6,6 +6,9 @@ import { serve } from '../../harness.mjs';
 
 const TARGET = '<p id="target">In stock</p>';
 
+/** How long `/slow` takes to answer every request after the first. */
+const SLOW_RELOAD_MS = 1500;
+
 /**
  * @param {string} title
  * @param {string} body
@@ -76,6 +79,9 @@ export async function startFixtures() {
       nth >= 2
         ? redirect(res, `http://other.test:${port}/login`)
         : html(res, page('Cross-site redirect', '')),
+    ),
+    '/slow': counted((res, nth) =>
+      setTimeout(() => html(res, page('Slow', '')), nth >= 2 ? SLOW_RELOAD_MS : 0),
     ),
     '/login': counted((res) => html(res, page('Sign in', '<form><input name="user"></form>'))),
     '/plain': counted((res) => html(res, page('Plain', '<p>Nothing to watch here.</p>'))),

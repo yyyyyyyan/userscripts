@@ -32,6 +32,8 @@
    * @property {'condition' | 'redirect'} kind
    * @property {number} at
    * @property {string} landedUrl
+   * @property {string} watchOrigin
+   * @property {string} watchHost The watched host name, the only part another site is shown.
    */
 
   /**
@@ -63,6 +65,8 @@
    * ends on.
    * @typedef {object} Handoff
    * @property {string} watchUrl
+   * @property {string} watchOrigin
+   * @property {string} watchHost
    * @property {string} fromUrl
    * @property {number} at
    * @property {string} nonce
@@ -83,8 +87,8 @@
   const HANDOFF_KEY = 'handoff';
   const SESSION_HANDOFF_KEY = 'reload-until:handoff';
   const SESSION_ALARM_KEY = 'reload-until:alarm';
-  const HANDOFF_LIFETIME_MS = 20_000;
-  const HANDOFF_START_SLACK_MS = 2000;
+  const HANDOFF_START_SLACK_MS = 500;
+  const HANDOFF_CLAIM_DELAY_MS = 3000;
   const MAX_SECONDS = 86400;
   /** @type {Omit<Watch, 'url'>} */
   const DEFAULTS = {
@@ -141,14 +145,6 @@
   const currentUrl = () => normalizeUrl(location.href);
 
   /**
-   * @param {string} a
-   * @param {string} b
-   */
-  function sameOrigin(a, b) {
-    return new URL(a).origin === new URL(b).origin;
-  }
-
-  /**
    * @param {string} key
    * @returns {string | null | undefined} Undefined when the page blocks session storage.
    */
@@ -182,13 +178,16 @@
   /**
    * Records which watched page is about to reload, so the page the reload ends on can tell a
    * redirect from a successful reload. Session storage covers redirects within the watched site
-   * in this tab; the shared record covers redirects to another site.
+   * in this tab; the shared record covers redirects to another site. Runs on the watched page,
+   * so its origin and host come from `location`.
    * @param {string} watchUrl
    */
   function writeHandoff(watchUrl) {
     /** @type {Handoff} */
     const handoff = {
       watchUrl,
+      watchOrigin: location.origin,
+      watchHost: location.hostname,
       fromUrl: currentUrl() ?? watchUrl,
       at: Date.now(),
       nonce: randomNonce(),
@@ -209,22 +208,39 @@
   }
 
   /**
-   * A record is this page's only if it is recent and this page's navigation started when the
-   * record was written. Navigation start is taken from the wall clock now, because
-   * `performance.timeOrigin` can drift from `Date.now()` in a long-lived browser process.
+   * Whether the previous document in this tab belonged to another site, which is what a reload
+   * redirected here from another site looks like. A user's reload of this page has this page
+   * as its previous document.
+   * @returns {boolean | null} Null where the browser has no Navigation API.
+   */
+  function arrivedFromAnotherSite() {
+    const { navigation } =
+      /** @type {Window & { navigation?: { activation?: { from: unknown } | null } }} */ (window);
+    if (!navigation?.activation) return null;
+    return navigation.activation.from === null;
+  }
+
+  /**
+   * A record is this page's only if this page's navigation started when the record was written:
+   * the script reloads right after writing it. Navigation start is taken from the wall clock now,
+   * because `performance.timeOrigin` can drift from `Date.now()` in a long-lived browser process.
+   * How long the page then took to load doesn't matter.
    * @param {unknown} value
    * @returns {value is Handoff}
    */
   function isOwnHandoff(value) {
     if (typeof value !== 'object' || value === null) return false;
-    const { watchUrl, at, nonce } = /** @type {Partial<Handoff>} */ (value);
-    if (typeof watchUrl !== 'string' || typeof nonce !== 'string' || typeof at !== 'number')
+    const { watchUrl, watchOrigin, watchHost, at, nonce } = /** @type {Partial<Handoff>} */ (value);
+    if (
+      typeof watchUrl !== 'string' ||
+      typeof watchOrigin !== 'string' ||
+      typeof watchHost !== 'string' ||
+      typeof nonce !== 'string' ||
+      typeof at !== 'number'
+    )
       return false;
-    const now = Date.now();
-    const navigationStart = now - performance.now();
-    return (
-      now - at < HANDOFF_LIFETIME_MS && Math.abs(navigationStart - at) <= HANDOFF_START_SLACK_MS
-    );
+    const navigationStart = Date.now() - performance.now();
+    return Math.abs(navigationStart - at) <= HANDOFF_START_SLACK_MS;
   }
 
   /** @param {string | null | undefined} raw */
@@ -242,7 +258,8 @@
   /**
    * Runs once per document load: finds out whether this page is where one of the script's own
    * reloads ended, clears the handoff record if so, and raises the redirect alarm when the
-   * reload ended somewhere other than the watched URL.
+   * reload ended somewhere other than the watched URL. The full watched URL is only compared as
+   * a string here, never parsed, because another site's page can replace `URL`.
    * @param {string} url The current normalized URL.
    */
   function claimHandoff(url) {
@@ -254,34 +271,48 @@
       if (isOwnHandoff(local)) {
         const shared = /** @type {Handoff | null} */ (GM_getValue(HANDOFF_KEY, null));
         if (shared?.nonce === local.nonce) GM_deleteValue(HANDOFF_KEY);
-        if (local.watchUrl !== url) raiseRedirectAlarm(local.watchUrl, url);
+        if (local.watchUrl !== url) raiseRedirectAlarm(local, url);
         return;
       }
     }
     const shared = /** @type {unknown} */ (GM_getValue(HANDOFF_KEY, null));
     if (!isOwnHandoff(shared)) return;
+    // The tab that reloaded has its own session record on the watched site, so a page of that
+    // site without one belongs to another tab, even on the watched URL itself.
+    if (raw !== undefined && shared.watchOrigin === location.origin) return;
     if (shared.watchUrl === url) {
       GM_deleteValue(HANDOFF_KEY);
       return;
     }
-    // A redirect within the watched site would have left this tab's own session record, so a
-    // same-site page without one belongs to another tab.
-    if (raw !== undefined && sameOrigin(shared.watchUrl, url)) return;
-    GM_deleteValue(HANDOFF_KEY);
-    raiseRedirectAlarm(shared.watchUrl, url);
+    const fromAnotherSite = arrivedFromAnotherSite();
+    if (fromAnotherSite === false) return;
+    if (fromAnotherSite) {
+      GM_deleteValue(HANDOFF_KEY);
+      raiseRedirectAlarm(shared, url);
+      return;
+    }
+    // Without the Navigation API, a user's reload of this page can't be told apart, so wait for
+    // the watched page to clear the record if its reload ended there after all.
+    setTimeout(() => {
+      const latest = /** @type {Handoff | null} */ (GM_getValue(HANDOFF_KEY, null));
+      if (latest?.nonce !== shared.nonce) return;
+      GM_deleteValue(HANDOFF_KEY);
+      raiseRedirectAlarm(shared, url);
+      if (!runner) boot();
+    }, HANDOFF_CLAIM_DELAY_MS);
   }
 
   /**
-   * @param {string} watchUrl
+   * @param {Handoff} handoff
    * @param {string} landedUrl
    */
-  function raiseRedirectAlarm(watchUrl, landedUrl) {
+  function raiseRedirectAlarm({ watchUrl, watchOrigin, watchHost }, landedUrl) {
     const watch = readWatch(watchUrl);
     if (!watch) return;
     if (!watch.pendingAlert)
       updateWatch(watchUrl, {
         enabled: false,
-        pendingAlert: { kind: 'redirect', at: Date.now(), landedUrl },
+        pendingAlert: { kind: 'redirect', at: Date.now(), landedUrl, watchOrigin, watchHost },
       });
     awayAlarmUrl = watchUrl;
   }
@@ -290,10 +321,11 @@
    * Keeps a shown alarm with this tab when it moves to another page. Session storage is only
    * written on the watched site itself, so another site never receives the watched URL.
    * @param {string} watchUrl
+   * @param {string | undefined} watchOrigin
    */
-  function rememberAlarm(watchUrl) {
+  function rememberAlarm(watchUrl, watchOrigin) {
     awayAlarmUrl = watchUrl;
-    if (sameOrigin(watchUrl, location.href) && sessionGet(SESSION_ALARM_KEY) !== watchUrl)
+    if (watchOrigin === location.origin && sessionGet(SESSION_ALARM_KEY) !== watchUrl)
       sessionSet(SESSION_ALARM_KEY, watchUrl);
   }
 
@@ -870,7 +902,7 @@
     /** @type {string | null} */
     let ownTitle = null;
     const away = currentUrl() !== CONFIG.url;
-    const watchedSite = sameOrigin(CONFIG.url, location.href);
+    const watchedSite = !away || CONFIG.pendingAlert?.watchOrigin === location.origin;
     let running = false;
     /** @type {ReturnType<typeof setInterval> | undefined} */
     let timer = undefined;
@@ -987,8 +1019,13 @@
       return watchedSite
         ? 'Reloading ' + CONFIG.url + ' ended on a different page. You may need to sign in again.'
         : 'Reloading a page on ' +
-            new URL(CONFIG.url).hostname +
+            (CONFIG.pendingAlert.watchHost || 'another site') +
             ' ended on this site instead. You may need to sign in again.';
+    }
+
+    /** Names the watch in a desktop notification tag without the full URL on another site. */
+    function notificationTag() {
+      return 'reload-until-' + (watchedSite ? CONFIG.url : CONFIG.pendingAlert?.watchHost);
     }
 
     function stoppedStatus() {
@@ -1036,7 +1073,13 @@
             const persisted = persist({
               enabled: false,
               pendingAlert: CONFIG.requireExplicitDismissal
-                ? { kind: 'condition', at: Date.now(), landedUrl: CONFIG.url }
+                ? {
+                    kind: 'condition',
+                    at: Date.now(),
+                    landedUrl: CONFIG.url,
+                    watchOrigin: location.origin,
+                    watchHost: location.hostname,
+                  }
                 : null,
             });
             alertUser(false);
@@ -1134,7 +1177,7 @@
       silence();
       alarmActive = true;
       const persistent = Boolean(CONFIG.pendingAlert) || CONFIG.requireExplicitDismissal;
-      if (!test && CONFIG.pendingAlert) rememberAlarm(CONFIG.url);
+      if (!test && CONFIG.pendingAlert) rememberAlarm(CONFIG.url, CONFIG.pendingAlert.watchOrigin);
       const title = test
         ? 'Reload Until — TEST'
         : CONFIG.pendingAlert?.kind === 'redirect'
@@ -1153,7 +1196,7 @@
         if (!alarmActive || !CONFIG.desktopNotification) return;
         const generation = ++notificationGeneration;
         const text = alarmMessage + (persistent ? ' — Open the page and click Acknowledge.' : '');
-        const tag = 'reload-until-' + (watchedSite ? CONFIG.url : new URL(CONFIG.url).hostname);
+        const tag = notificationTag();
         const click = () => {
           if (!alarmActive || generation !== notificationGeneration) return;
           window.focus();
