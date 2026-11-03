@@ -95,6 +95,33 @@ describe('check', () => {
     assert.match(result.stderr, /@version changed outside a release/);
   });
 
+  it('fails a hand downgrade that brings its own CHANGELOG section', async () => {
+    await repo.write(scriptPath, scriptSource({ name: 'Alpha', version: '1.0.5' }));
+    await repo.write('scripts/alpha/CHANGELOG.md', `${intro}\n${section('1.0.5')}`);
+    base = repo.commit('at 1.0.5');
+    await repo.write(scriptPath, scriptSource({ name: 'Alpha', version: '1.0.2' }));
+    await repo.write(
+      'scripts/alpha/CHANGELOG.md',
+      `${intro}\n${section('1.0.5')}\n${section('1.0.2', '### Fixed\n\n- Fixes alpha.')}`,
+    );
+    repo.commit('downgrade by hand');
+    const result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /@version changed outside a release/);
+  });
+
+  it('fails a version below 1.0.0 even with a matching section', async () => {
+    await repo.write(scriptPath, scriptSource({ name: 'Alpha', version: '0.0.0' }));
+    await repo.write('scripts/alpha/CHANGELOG.md', intro);
+    base = repo.commit('back to 0.0.0');
+    await repo.write(scriptPath, scriptSource({ name: 'Alpha', version: '0.5.0' }));
+    await repo.write('scripts/alpha/CHANGELOG.md', `${intro}\n${section('0.5.0')}`);
+    repo.commit('release 0.5.0');
+    const result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /@version changed outside a release/);
+  });
+
   it('accepts a release-prepare commit without demanding a new fragment', async () => {
     await repo.write('scripts/alpha/changelog.d/x.added.md', 'Adds x.\n');
     base = repo.commit('pending fragment');

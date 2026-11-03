@@ -3,46 +3,75 @@ import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-import { sectionBody } from './lib/changelog.mjs';
 import { blobAt, git, listFilesAt, nameStatus, readAt } from './lib/git.mjs';
 import { parseMetadata } from './lib/metadata.mjs';
-import { compareVersions } from './lib/semver.mjs';
+import { releaseOf } from './lib/release.mjs';
 
 const root = join(import.meta.dirname, '..');
 const usage = 'usage: node tools/release-publish.mjs --before <sha> --after <sha> --dist <dir>';
 const SCRIPT_PATH = /^scripts\/([^/]+)\/\1\.user\.js$/;
 
 /**
- * Finds the scripts released between two commits. A script is released when its
- * file was modified, its `@version` changed, `CHANGELOG.md` at `afterSha` has a
- * section for the new version, and that version is at least 1.0.0.
+ * Walks the first-parent commits in `beforeSha..afterSha`, oldest first, and
+ * compares each with its first parent. Root commits are skipped.
+ * @param {string} beforeSha
+ * @param {string} afterSha
+ * @param {string} repo
+ * @returns {Array<{ slug: string, version: string, notes: string, commit: string }>}
+ */
+function releasesByCommit(beforeSha, afterSha, repo) {
+  const releases = [];
+  const lines = git(repo, [
+    'rev-list',
+    '--reverse',
+    '--first-parent',
+    '--parents',
+    `${beforeSha}..${afterSha}`,
+  ])
+    .split('\n')
+    .filter(Boolean);
+  for (const line of lines) {
+    const [commit, parent] = line.split(' ');
+    if (!parent) {
+      continue;
+    }
+    const changes = nameStatus(repo, ['--no-renames', parent, commit, '--', 'scripts']);
+    for (const { status, path } of changes) {
+      const slug = SCRIPT_PATH.exec(path)?.[1];
+      if (status !== 'M' || !slug) {
+        continue;
+      }
+      const changelogPath = `scripts/${slug}/CHANGELOG.md`;
+      const release = releaseOf({
+        oldSource: readAt(repo, parent, path),
+        newSource: readAt(repo, commit, path),
+        oldChangelog: readAt(repo, parent, changelogPath),
+        newChangelog: readAt(repo, commit, changelogPath),
+      });
+      if (release) {
+        releases.push({ slug, ...release, commit });
+      }
+    }
+  }
+  return releases;
+}
+
+/**
+ * Finds the releases between two commits. Each first-parent commit in
+ * `beforeSha..afterSha` is compared with its parent, so several releases of one
+ * script in a push each get their own entry.
  * @param {string} beforeSha
  * @param {string} afterSha
  * @param {string} repo Path to the git repository.
- * @returns {Promise<Array<{ slug: string, version: string, notes: string }>>} Sorted by slug.
+ * @returns {Promise<Array<{ slug: string, version: string, notes: string }>>} In commit
+ *   order, then by slug.
  */
 export async function findReleases(beforeSha, afterSha, repo) {
-  const releases = [];
-  const changes = nameStatus(repo, ['--no-renames', beforeSha, afterSha, '--', 'scripts']);
-  for (const { status, path } of changes) {
-    const slug = SCRIPT_PATH.exec(path)?.[1];
-    if (status !== 'M' || !slug) {
-      continue;
-    }
-    const oldVersion = parseMetadata(readAt(repo, beforeSha, path) ?? '').get('version');
-    const version = parseMetadata(readAt(repo, afterSha, path) ?? '').get('version');
-    if (!version || version === oldVersion || compareVersions(version, '1.0.0') < 0) {
-      continue;
-    }
-    const notes = sectionBody(
-      readAt(repo, afterSha, `scripts/${slug}/CHANGELOG.md`) ?? '',
-      version,
-    );
-    if (notes !== null) {
-      releases.push({ slug, version, notes });
-    }
-  }
-  return releases.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  return releasesByCommit(beforeSha, afterSha, repo).map(({ slug, version, notes }) => ({
+    slug,
+    version,
+    notes,
+  }));
 }
 
 /**
@@ -78,15 +107,14 @@ async function exists(path) {
  * Writes one release into the `dist` checkout and commits it there. The commit
  * message becomes the Greasy Fork changelog.
  * @param {string} dist
- * @param {string} afterSha
- * @param {{ slug: string, version: string, notes: string }} release
+ * @param {{ slug: string, version: string, notes: string, commit: string }} release
  */
-async function publish(dist, afterSha, { slug, version, notes }) {
+async function publish(dist, { slug, version, notes, commit }) {
   const source = `scripts/${slug}`;
-  const script = readAt(root, afterSha, `${source}/${slug}.user.js`) ?? '';
-  const readme = readAt(root, afterSha, `${source}/README.md`);
+  const script = readAt(root, commit, `${source}/${slug}.user.js`) ?? '';
+  const readme = readAt(root, commit, `${source}/README.md`);
   if (readme === null) {
-    throw new Error(`${source}/README.md is missing at ${afterSha}`);
+    throw new Error(`${source}/README.md is missing at ${commit}`);
   }
   const name = parseMetadata(script).get('name') ?? slug;
 
@@ -95,10 +123,10 @@ async function publish(dist, afterSha, { slug, version, notes }) {
 
   const imagesDir = join(dist, 'images', slug);
   await rm(imagesDir, { recursive: true, force: true });
-  for (const file of listFilesAt(root, afterSha, `${source}/images`)) {
+  for (const file of listFilesAt(root, commit, `${source}/images`)) {
     const target = join(imagesDir, file.slice(`${source}/images/`.length));
     await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, blobAt(root, afterSha, file));
+    await writeFile(target, blobAt(root, commit, file));
   }
 
   const paths = [`${slug}.user.js`, `${slug}.md`];
@@ -128,8 +156,8 @@ async function main(args) {
   if (!values.before || !values.after || !values.dist) {
     throw new Error(usage);
   }
-  for (const release of await findReleases(values.before, values.after, root)) {
-    await publish(resolve(values.dist), values.after, release);
+  for (const release of releasesByCommit(values.before, values.after, root)) {
+    await publish(resolve(values.dist), release);
     console.log(`${release.slug}-v${release.version}`);
   }
 }

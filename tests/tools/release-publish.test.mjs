@@ -89,7 +89,7 @@ describe('release publishing', () => {
       ]);
     });
 
-    it('finds the releases of two scripts in one range', async () => {
+    it('finds the releases of two scripts in one range, in commit order', async () => {
       await addScript('alpha', 'Alpha');
       await addScript('beta', 'Beta');
       const before = repo.commit('add scripts');
@@ -98,8 +98,73 @@ describe('release publishing', () => {
       await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
       const after = repo.commit('release(alpha): 1.0.0');
       assert.deepEqual(await findReleases(before, after, repo.root), [
-        { slug: 'alpha', version: '1.0.0', notes: '### Added\n\n- Adds alpha.' },
         { slug: 'beta', version: '1.0.0', notes: '### Added\n\n- Adds beta.' },
+        { slug: 'alpha', version: '1.0.0', notes: '### Added\n\n- Adds alpha.' },
+      ]);
+    });
+
+    it('does not publish a revert to an older version', async () => {
+      await addScript('alpha', 'Alpha');
+      const first = repo.commit('add alpha');
+      await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
+      repo.commit('release 1.0.0');
+      await release('alpha', 'Alpha', '1.1.0', 'Adds more.', {
+        previous: [['1.0.0', '### Added\n\n- Adds alpha.']],
+      });
+      const before = repo.commit('release 1.1.0');
+      await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
+      const after = repo.commit('revert');
+      assert.deepEqual(await findReleases(before, after, repo.root), []);
+      assert.equal((await findReleases(first, before, repo.root)).length, 2);
+    });
+
+    it('does not publish a hand downgrade that brings its own CHANGELOG section', async () => {
+      await addScript('alpha', 'Alpha');
+      repo.commit('add alpha');
+      await release('alpha', 'Alpha', '1.2.0', 'Adds alpha.');
+      const before = repo.commit('release 1.2.0');
+      await release('alpha', 'Alpha', '1.1.5', 'Fixes alpha.', {
+        previous: [['1.2.0', '### Added\n\n- Adds alpha.']],
+      });
+      const after = repo.commit('hand downgrade');
+      assert.deepEqual(await findReleases(before, after, repo.root), []);
+    });
+
+    it('does not publish a version whose section already existed', async () => {
+      await addScript('alpha', 'Alpha');
+      await repo.write(
+        'scripts/alpha/CHANGELOG.md',
+        changelogWith(['1.0.0', '### Added\n\n- Old.']),
+      );
+      const before = repo.commit('add alpha');
+      await repo.write(scriptPath('alpha'), scriptSource({ name: 'Alpha', version: '1.0.0' }));
+      const after = repo.commit('bump by hand');
+      assert.deepEqual(await findReleases(before, after, repo.root), []);
+    });
+
+    it('finds a script that was added at 0.0.0 and released later in the same range', async () => {
+      const before = repo.head();
+      await addScript('alpha', 'Alpha');
+      repo.commit('add alpha');
+      await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
+      const after = repo.commit('release alpha');
+      assert.deepEqual(await findReleases(before, after, repo.root), [
+        { slug: 'alpha', version: '1.0.0', notes: '### Added\n\n- Adds alpha.' },
+      ]);
+    });
+
+    it('finds two releases of one script in one range', async () => {
+      await addScript('alpha', 'Alpha');
+      const before = repo.commit('add alpha');
+      await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
+      repo.commit('release 1.0.0');
+      await release('alpha', 'Alpha', '1.1.0', 'Adds more.', {
+        previous: [['1.0.0', '### Added\n\n- Adds alpha.']],
+      });
+      const after = repo.commit('release 1.1.0');
+      assert.deepEqual(await findReleases(before, after, repo.root), [
+        { slug: 'alpha', version: '1.0.0', notes: '### Added\n\n- Adds alpha.' },
+        { slug: 'alpha', version: '1.1.0', notes: '### Added\n\n- Adds more.' },
       ]);
     });
 
@@ -166,6 +231,35 @@ describe('release publishing', () => {
         PNG,
       );
       assert.ok((await readdir(dist.dir)).includes('beta.md'));
+    });
+
+    it('publishes two releases of one script as two dist commits, tags and notes', async () => {
+      await addScript('alpha', 'Alpha');
+      const before = repo.commit('add alpha');
+      await release('alpha', 'Alpha', '1.0.0', 'Adds alpha.');
+      repo.commit('release 1.0.0');
+      await release('alpha', 'Alpha', '1.1.0', 'Adds more.', {
+        previous: [['1.0.0', '### Added\n\n- Adds alpha.']],
+      });
+      const after = repo.commit('release 1.1.0');
+      const distBefore = git(dist.dir, 'rev-parse', 'HEAD');
+
+      const result = publish(before, after);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, 'alpha-v1.0.0\nalpha-v1.1.0\n');
+      assert.equal(git(dist.dir, 'rev-list', '--count', `${distBefore}..HEAD`), '2');
+      assert.equal(
+        git(dist.dir, 'log', '-1', '--format=%B', 'HEAD~1'),
+        'Alpha 1.0.0\n\n### Added\n\n- Adds alpha.',
+      );
+      assert.equal(
+        git(dist.dir, 'log', '-1', '--format=%B', 'HEAD'),
+        'Alpha 1.1.0\n\n### Added\n\n- Adds more.',
+      );
+      assert.equal(
+        git(dist.dir, 'show', 'HEAD~1:alpha.user.js'),
+        scriptSource({ name: 'Alpha', version: '1.0.0', body: 'v1.0.0' }).trim(),
+      );
     });
 
     it('rewrites only relative images/ links', async () => {

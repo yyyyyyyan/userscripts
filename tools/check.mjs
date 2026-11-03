@@ -2,10 +2,10 @@ import { stat } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { hasSection } from './lib/changelog.mjs';
 import { parseFragmentName, readFragments, validateFragment } from './lib/fragments.mjs';
 import { git, nameStatus, readAt } from './lib/git.mjs';
 import { parseMetadata } from './lib/metadata.mjs';
+import { releaseOf } from './lib/release.mjs';
 import { listScripts } from './lib/scripts.mjs';
 
 const root = join(import.meta.dirname, '..');
@@ -94,12 +94,16 @@ function checkDiff(base, allowNoChangelog) {
         violations.push(`${path}: new script must start at @version 0.0.0`);
       }
     } else if (status === 'M') {
-      const oldVersion = parseMetadata(readAt(root, mergeBase, path) ?? '').get('version');
+      const oldSource = readAt(root, mergeBase, path);
+      const oldVersion = parseMetadata(oldSource ?? '').get('version');
       const changelogPath = `scripts/${slug}/CHANGELOG.md`;
       const isRelease =
-        version !== oldVersion &&
-        hasSection(readAt(root, 'HEAD', changelogPath) ?? '', String(version)) &&
-        !hasSection(readAt(root, mergeBase, changelogPath) ?? '', String(version));
+        releaseOf({
+          oldSource,
+          newSource: readAt(root, 'HEAD', path),
+          oldChangelog: readAt(root, mergeBase, changelogPath),
+          newChangelog: readAt(root, 'HEAD', changelogPath),
+        }) !== null;
 
       if (version !== oldVersion && !isRelease) {
         violations.push(`${path}: @version changed outside a release`);
