@@ -2,7 +2,7 @@
 // @name         Per-Site Light/Dark Mode
 // @namespace    yyyyyyyan/per-site-light-dark-mode
 // @version      0.0.0
-// @description  Asks each site for its own light or dark theme, remembered per site. It never generates colors.
+// @description  Makes each site use its own light or dark theme, remembered per site, without generating colors.
 // @author       yyyyyyyan
 // @license      GPL-3.0-or-later
 // @homepageURL  https://github.com/yyyyyyyan/userscripts/tree/main/scripts/per-site-light-dark-mode
@@ -16,7 +16,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
-// @inject-into  page
+// @inject-into  auto
 // @sandbox      JavaScript
 // @compatible   chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
 // @compatible   firefox Violentmonkey or Tampermonkey
@@ -25,57 +25,163 @@
 (() => {
   'use strict';
 
+  const PREFIX = 'choice:';
+  const LOG = '[Per-Site Light/Dark Mode]';
   const host = location.hostname.toLowerCase();
-  const key = `site-color-preference:${host}`;
-  const saved = GM_getValue(key, /** @type {string} */ ('default'));
-  const mode = saved === 'light' || saved === 'dark' ? saved : 'default';
+  const key = `${PREFIX}${host}`;
+
+  /**
+   * Finds the choice saved for `hostname` itself, else for the nearest parent host. A browser
+   * default saved on a host ends the search, so a subdomain can opt out of its parent's choice.
+   * @param {string} hostname
+   * @param {(key: string) => string | undefined} getValue
+   * @returns {{ host: string, mode: 'light' | 'dark' } | null}
+   */
+  function resolveChoice(hostname, getValue) {
+    const labels = hostname.split('.');
+    const isAddress = hostname.includes(':') || /^[\d.]+$/.test(hostname);
+    const candidates = isAddress ? [hostname] : labels.map((_, i) => labels.slice(i).join('.'));
+    for (const candidate of candidates) {
+      const value = getValue(`${PREFIX}${candidate}`);
+      if (value === 'light' || value === 'dark') return { host: candidate, mode: value };
+      if (value === 'default') return null;
+    }
+    return null;
+  }
+
+  const choice = resolveChoice(host, GM_getValue);
+  const mode = choice ? choice.mode : 'default';
   const page = /** @type {Window & typeof globalThis} */ (
     typeof unsafeWindow === 'undefined' ? window : unsafeWindow
   );
   const nativeMatchMedia = /** @type {(query?: string) => MediaQueryList} */ (page.matchMedia);
+  const isolated = typeof GM_info === 'object' && GM_info.injectInto === 'content';
+
+  /**
+   * Counts page scripts that ran before this one could. Any of them may already have read
+   * the real preference, and nothing afterwards can tell whether one did.
+   */
+  function scriptsAlreadyRun() {
+    const parsed = document.readyState !== 'loading';
+    return [...(document.scripts || [])].filter((element) => {
+      const type = element.type.trim().toLowerCase();
+      const classic =
+        type === '' || /^(?:text|application)\/(?:x-)?(?:java|ecma)script$/.test(type);
+      if (!classic && type !== 'module') return false;
+      return parsed || (classic && !element.async && !element.defer);
+    }).length;
+  }
+
+  const injectedAt = { readyState: document.readyState, scripts: scriptsAlreadyRun() };
   const blockedSheets = new Set();
   /** @type {CSSStyleSheet | null} */
   let pinSheet = null;
   let pinError = '';
+  /** @type {'none' | 'pinned' | 'site' | 'failed'} */
+  let pinDecision = 'none';
+  let siteScheme = '';
+  let everPinned = false;
   const status = {
-    javascript: 'inactive',
+    javascriptError: '',
     mediaConditions: 0,
+    pageQueries: 0,
     hooks: /** @type {string[]} */ ([]),
   };
 
-  /** @param {string} next */
+  /** @param {'light' | 'dark' | 'default'} next */
   function selectMode(next) {
-    if (next === 'default') GM_deleteValue(key);
-    else GM_setValue(key, next);
+    GM_deleteValue(key);
+    if (next !== 'default') GM_setValue(key, next);
+    else if (resolveChoice(host, (name) => (name === key ? undefined : GM_getValue(name))))
+      GM_setValue(key, 'default');
     location.reload();
   }
 
-  for (const [value, label] of [
-    ['light', 'Prefer light'],
-    ['dark', 'Prefer dark'],
-    ['default', 'Use browser default'],
-  ]) {
-    GM_registerMenuCommand(`${value === mode ? '\u2713 ' : ''}${label} for ${host} (reload)`, () =>
-      selectMode(value),
+  const labels = { light: 'Light', dark: 'Dark', default: 'Browser default' };
+  for (const value of /** @type {const} */ (['light', 'dark', 'default'])) {
+    const active = value === mode;
+    const from = active && choice && choice.host !== host ? `from ${choice.host}, ` : '';
+    GM_registerMenuCommand(
+      `${active ? '✓ ' : ''}${labels[value]} for ${host} (${from}reloads the tab)`,
+      () => selectMode(value),
     );
   }
 
-  GM_registerMenuCommand('Show color preference status', () => {
-    const report = {
-      host,
-      preference: mode,
-      browserPreference: nativeMatchMedia.call(page, '(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light',
-      javascriptOverride: status.javascript,
-      mediaConditionsChanged: status.mediaConditions,
-      rootColorScheme: pinState(),
-      dynamicCssHooks: status.hooks,
-      inaccessibleStylesheets: [...blockedSheets],
-      note: 'A saved site/account theme can override this preference. Choose System/Automatic on the site.',
-    };
-    console.info('[Site Color Preference]', report);
-    window.alert(JSON.stringify(report, null, 2));
+  /** @returns {string[]} Two to four plain sentences. */
+  function describeStatus() {
+    const browser = nativeMatchMedia.call(page, '(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+    if (!choice) {
+      const saved =
+        GM_getValue(key) === 'default'
+          ? `Browser default is saved for ${host}`
+          : `No choice is saved for ${host}`;
+      return [
+        `${saved}, so this page follows your browser's setting, which is ${browser}.`,
+        "To pick one, choose Light or Dark in your userscript manager's menu.",
+      ];
+    }
+
+    const lines = [
+      choice.host === host
+        ? `${labels[mode]} is saved for ${host}.`
+        : `${labels[mode]} is saved for ${choice.host}, which includes ${host}.`,
+    ];
+    if (isolated) {
+      const reason =
+        document.contentType === 'text/html'
+          ? "most likely the page's Content Security Policy stopped it"
+          : 'this is not an HTML page';
+      lines.push(
+        `The script could not run inside this page itself (${reason}), so the page's own scripts may still see your browser's setting.`,
+      );
+    } else if (status.javascriptError) {
+      lines.push(
+        `The script could not answer this page's theme checks: ${status.javascriptError.replace(/[.\s]+$/, '')}.`,
+      );
+    } else if (injectedAt.scripts > 0) {
+      lines.push(
+        status.mediaConditions > 0 || everPinned
+          ? "Its style sheets follow your choice, but this page may have checked its theme before the script could run, so parts of it may still show your browser's setting."
+          : "This page may have checked its theme before the script could run, so it may still show your browser's setting.",
+        "Reload the page, or set the site's own theme to System or Automatic.",
+      );
+    } else if (status.mediaConditions > 0 || status.pageQueries > 0 || everPinned) {
+      lines.push(`It applied: this page asked which theme you prefer and was told ${mode}.`);
+    } else {
+      lines.push(
+        `This page has not asked which theme you prefer, so it may not have a ${mode} theme of its own.`,
+      );
+    }
+
+    const pin = pinState();
+    if (pin === 'site') {
+      lines.push(
+        `The site has set its own ${siteScheme} color scheme, for example from its own theme switch, and the script leaves that alone.`,
+      );
+    } else if (pin === 'dropped') {
+      lines.push(
+        'The page later removed the color scheme the script set, so form controls and scroll bars may not match until you reload the page.',
+      );
+    } else if (pin === 'failed') {
+      lines.push(
+        `The script could not set the page's color scheme: ${pinError.replace(/[.\s]+$/, '')}.`,
+      );
+    }
+    if (blockedSheets.size > 0) {
+      const count = blockedSheets.size;
+      lines.push(
+        `${count} style ${count === 1 ? 'sheet' : 'sheets'} from other sites could not be read, so parts of this page may not switch.`,
+      );
+    }
+    return lines.slice(0, 4);
+  }
+
+  GM_registerMenuCommand('Status', () => {
+    const text = describeStatus().join(' ');
+    console.info(LOG, text, { injectedAt, isolated, status, pin: pinState(), blockedSheets });
+    window.alert(text);
   });
 
   if (mode === 'default') return;
@@ -103,16 +209,19 @@
   try {
     page.matchMedia = share(function matchMedia(/** @type {unknown} */ query) {
       if (arguments.length === 0) return nativeMatchMedia.call(page);
-      return nativeMatchMedia.call(page, rewrite(String(query)));
+      const original = String(query);
+      const next = rewrite(original);
+      if (next !== original) status.pageQueries++;
+      return nativeMatchMedia.call(page, next);
     });
-    status.javascript =
+    const answered =
       page.matchMedia('(prefers-color-scheme: dark)').matches === (mode === 'dark') &&
-      page.matchMedia('(prefers-color-scheme: light)').matches === (mode === 'light')
-        ? 'installed'
-        : 'failed';
+      page.matchMedia('(prefers-color-scheme: light)').matches === (mode === 'light');
+    status.pageQueries = 0;
+    if (!answered) status.javascriptError = 'the replacement gave the wrong answer';
   } catch (error) {
-    status.javascript = `failed: ${/** @type {Error} */ (error).message}`;
-    console.warn('[Site Color Preference] JavaScript override failed.', error);
+    status.javascriptError = /** @type {Error} */ (error).message;
+    console.warn(LOG, 'JavaScript override failed.', error);
   }
 
   /** @param {MediaList | null | undefined} media */
@@ -141,7 +250,7 @@
         if (rule.styleSheet) processSheet(rule.styleSheet, visited);
         if (rule.cssRules) walkRules(rule.cssRules, visited);
       } catch (error) {
-        console.debug('[Site Color Preference] Could not adjust a CSS rule.', error);
+        console.debug(LOG, 'Could not adjust a CSS rule.', error);
       }
     }
   }
@@ -159,7 +268,7 @@
     } catch (error) {
       if (/** @type {Error} */ (error).name === 'SecurityError')
         blockedSheets.add(sheet.href || '(unreadable stylesheet)');
-      else console.debug('[Site Color Preference] Could not adjust a stylesheet.', error);
+      else console.debug(LOG, 'Could not adjust a stylesheet.', error);
     }
   }
 
@@ -167,9 +276,10 @@
     return pinSheet !== null && document.adoptedStyleSheets.includes(pinSheet);
   }
 
+  /** @returns {'none' | 'pinned' | 'dropped' | 'site' | 'failed'} */
   function pinState() {
-    if (pinApplied()) return mode;
-    return pinError ? `failed: ${pinError}` : 'unchanged';
+    if (pinDecision === 'pinned') return pinApplied() ? 'pinned' : 'dropped';
+    return pinDecision;
   }
 
   // Judges the page by the value it declares with the pin lifted, so a single value (the
@@ -188,15 +298,24 @@
       );
       const computed = getComputedStyle(root).colorScheme;
       const declared = computed === 'normal' ? meta?.content || '' : computed;
+      const light = /\blight\b/i.test(declared);
+      const dark = /\bdark\b/i.test(declared);
       // Avoid imposing dark browser defaults on a page that only provides light colors.
-      if (!/\blight\b/i.test(declared) || !/\bdark\b/i.test(declared)) return;
+      if (!light || !dark) {
+        pinDecision = light || dark ? 'site' : 'none';
+        siteScheme = dark ? 'dark' : 'light';
+        return;
+      }
       if (!pinSheet) {
         pinSheet = new page.CSSStyleSheet();
         pinSheet.replaceSync(`:root { color-scheme: ${mode} !important; }`);
       }
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, pinSheet];
+      pinDecision = 'pinned';
+      everPinned = true;
       pinError = '';
     } catch (error) {
+      pinDecision = 'failed';
       pinError = /** @type {Error} */ (error).message;
     }
   }
@@ -270,7 +389,7 @@
       });
       status.hooks.push(name);
     } catch (error) {
-      console.debug(`[Site Color Preference] ${name} hook unavailable.`, error);
+      console.debug(LOG, `${name} hook unavailable.`, error);
     }
   }
 
@@ -325,13 +444,16 @@
     },
     true,
   );
-  /** @param {HTMLElement} root */
+  /** @param {Element} root */
   function watchRoot(root) {
-    let inlineScheme = root.style.getPropertyValue('color-scheme');
+    // The root of an XML document, such as a news feed, has no inline style.
+    const style = /** @type {Partial<ElementCSSInlineStyle>} */ (root).style;
+    const readInline = () => (style ? style.getPropertyValue('color-scheme') : '');
+    let inlineScheme = readInline();
     new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         if (mutation.attributeName === 'style') {
-          const current = root.style.getPropertyValue('color-scheme');
+          const current = readInline();
           if (current === inlineScheme) continue;
           inlineScheme = current;
         }
