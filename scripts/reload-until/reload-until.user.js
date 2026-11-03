@@ -521,7 +521,10 @@
    * @returns {boolean} Whether the page shows the element. Browsers without the check count it.
    */
   function isShown(element) {
-    return typeof element.checkVisibility !== 'function' || element.checkVisibility();
+    return (
+      typeof element.checkVisibility !== 'function' ||
+      element.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })
+    );
   }
 
   /**
