@@ -374,6 +374,31 @@
     attributeFilter: ['media', 'href', 'rel', 'disabled', 'content'],
   };
 
+  /** True while the script adds or removes its own pin, which the setter hook must ignore. */
+  let settingPin = false;
+
+  /**
+   * Confirms the pin won the cascade, which an inline or more specific `!important` declaration
+   * on the root prevents. It runs once the next frame has rendered, when reading the computed
+   * style costs no extra recalculation.
+   */
+  function verifyPinSoon() {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(verifyPinLater);
+    else verifyPinLater();
+  }
+
+  function verifyPinLater() {
+    setTimeout(verifyPin);
+  }
+
+  function verifyPin() {
+    const root = document.documentElement;
+    if (pinState() !== 'pinned' || !root || getComputedStyle(root).colorScheme === mode) return;
+    pinDecision = 'failed';
+    pinError = "the page's own style takes priority";
+    everPinned = false;
+  }
+
   /**
    * Judges the page by the value it declares with the pin lifted, so a single value (the
    * site's own switch, whatever its selector) is left alone and only "light dark" is steered.
@@ -381,6 +406,7 @@
   function pinColorScheme() {
     const root = document.documentElement;
     if (!root || document.readyState === 'loading') return;
+    settingPin = true;
     try {
       if (pinSheet && pinApplied()) {
         document.adoptedStyleSheets = document.adoptedStyleSheets.filter(
@@ -406,9 +432,12 @@
       pinDecision = 'pinned';
       everPinned = true;
       pinError = '';
+      verifyPinSoon();
     } catch (error) {
       pinDecision = 'failed';
       pinError = /** @type {Error} */ (error).message;
+    } finally {
+      settingPin = false;
     }
   }
 
@@ -635,6 +664,18 @@
     walkRules([/** @type {CSSGroupingRule} */ (rule).cssRules[index]]);
     schedulePinFor(text);
   });
+  hook(page.CSSStyleSheet?.prototype, 'deleteRule', schedulePin);
+  hook(page.CSSGroupingRule?.prototype, 'deleteRule', schedulePin);
+  hook(
+    page.Document?.prototype,
+    'adoptedStyleSheets',
+    (doc) => {
+      if (settingPin) return;
+      for (const sheet of /** @type {Document} */ (doc).adoptedStyleSheets) processSheet(sheet);
+      schedulePin();
+    },
+    'set',
+  );
   hook(page.CSSStyleSheet?.prototype, 'replaceSync', (sheet) => {
     reprocessSheet(sheet);
     schedulePin();

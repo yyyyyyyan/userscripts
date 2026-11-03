@@ -302,7 +302,7 @@ test('the pin comes back after the page drops it, and status tells the truth', a
     expect(await readStatus(vm, page)).not.toContain(DROPPED);
 
     await page.evaluate(() => {
-      document.adoptedStyleSheets = [];
+      document.adoptedStyleSheets.splice(0);
     });
     await expect.poll(() => backgroundOf(page)).toBe(WHITE);
     const dropped = await readStatus(vm, page);
@@ -465,6 +465,19 @@ const SCHEME_CHANGES = [
     { before: BLACK, after: WHITE },
   ],
   [
+    'a prepared sheet adopted later',
+    'ld-toggle.html',
+    {},
+    () => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(':root { color-scheme: light }');
+      setTimeout(() => {
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      }, 300);
+    },
+    { before: BLACK, after: WHITE },
+  ],
+  [
     'a color-scheme meta tag',
     'meta-scheme.html',
     {},
@@ -498,6 +511,43 @@ for (const [how, name, routes, change, expected] of SCHEME_CHANGES) {
     });
   });
 }
+
+test("deleting the site's own rule brings the saved choice back", async () => {
+  await withSite(await fixture('ld-toggle.html'), async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    await expect.poll(() => backgroundOf(page)).toBe(BLACK);
+    await page.evaluate(() => {
+      const sheet = document.styleSheets[0];
+      sheet.insertRule(':root { color-scheme: light }', sheet.cssRules.length);
+    });
+    await expect.poll(() => backgroundOf(page)).toBe(WHITE);
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      const sheet = document.styleSheets[0];
+      sheet.deleteRule(sheet.cssRules.length - 1);
+    });
+    await expect.poll(() => backgroundOf(page)).toBe(BLACK);
+  });
+});
+
+test('status says so when an inline !important color scheme outranks the choice', async () => {
+  const html = [
+    '<!doctype html><html><head><meta charset="utf-8"><title>inline important</title>',
+    "<script>document.documentElement.style.setProperty('color-scheme', 'light dark', 'important');</script>",
+    '<style>body { background: light-dark(rgb(255, 255, 255), rgb(0, 0, 0)); }</style>',
+    '</head><body><h1>inline important</h1></body></html>',
+  ].join('');
+  await withSite(html, async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    await page.waitForTimeout(500);
+    expect(await backgroundOf(page)).toBe(WHITE);
+    const status = await readStatus(vm, page);
+    expect(status).toContain("the page's own style takes priority");
+    expect(status).not.toContain('It applied');
+  });
+});
 
 /**
  * Builds a page shaped like a large real site: about 27,000 rules, one in eleven of them a
