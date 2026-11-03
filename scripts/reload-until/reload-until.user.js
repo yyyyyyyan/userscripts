@@ -75,6 +75,7 @@
    * @typedef {object} Runner
    * @property {() => void} suspendRefresh
    * @property {() => void} destroy
+   * @property {() => void} focus Moves keyboard focus to the widget.
    */
 
   const SHADOW_MODE = 'closed';
@@ -84,6 +85,9 @@
   const HANDOFF_KEY = 'handoff';
   const SESSION_HANDOFF_KEY = 'reload-until:handoff';
   const SESSION_ALARM_KEY = 'reload-until:alarm';
+  const SESSION_COLLAPSED_KEY = 'reload-until:collapsed';
+  const HINT_KEY = 'hint-shown';
+  const MENU_COMMAND = 'Reload Until: Manage watches';
   const HANDOFF_START_SLACK_MS = 500;
   const HANDOFF_CLAIM_DELAY_MS = 3000;
   const MAX_SECONDS = 86400;
@@ -108,28 +112,41 @@
 
   const PANEL_CSS = `
     *{box-sizing:border-box}
+    [hidden]{display:none !important}
+    .backdrop{width:100%;height:100%;display:grid;place-items:center;padding:12px;background:#0009}
+    .panel:focus{outline:none}
     .panel{width:min(650px,94vw);max-height:90vh;overflow:auto;background:#17202a;color:#fff;border:1px solid #777;border-radius:12px;padding:20px;font:14px/1.5 system-ui,sans-serif;box-shadow:0 12px 50px #0009}
     h2{margin:0 0 8px;font-size:22px}
+    h3{margin:0;font-size:16px}
     p{margin:6px 0 14px;color:#d1d5db}
     label{display:block}
+    .group{margin:16px 0 0;padding:12px 14px 14px;border:1px solid #3d4b59;border-radius:8px}
     .field{margin:12px 0 0}
+    .prompt{margin:8px 0 0;padding:8px 10px;border-left:4px solid #f5c542;background:#243140;color:#fff}
+    .unsaved{margin-top:14px;padding:10px 12px;border:1px solid #f5c542;border-radius:8px}
+    .unsaved p{margin:0 0 8px;color:#fff}
+    .unsaved .actions{margin-top:0}
     .check{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
     .check small{flex-basis:100%}
     input:not([type=checkbox]),select,textarea{display:block;width:100%;margin-top:4px;padding:8px;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;font:inherit}
     input[type=checkbox]{margin:0}
     [aria-invalid=true]{border-color:#ff5252;outline:2px solid #ff5252}
-    small{display:block;color:#bfc8d2}
+    small{display:block;margin-top:2px;font-size:13px;color:#bfc8d2}
     .field-error{flex-basis:100%;margin:4px 0 0;color:#ffb4b4}
     button{font:inherit;padding:7px 12px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#111;cursor:pointer}
     .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
     .error{color:#ffb4b4;white-space:pre-wrap;margin-top:12px}
-    details{margin-top:16px}
-    summary{cursor:pointer;font-weight:600}
   `;
 
   const WIDGET_CSS = `
     .box{background:#17202a;color:#fff;border:2px solid #7f8c8d;border-radius:10px;padding:14px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 3px 18px #0006}
     .box.alarm{border-color:#ff5252}
+    .box.collapsed{padding:6px 10px}
+    .head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .name{font-weight:700}
+    .head button{padding:2px 8px;font-size:12px}
+    .body{margin-top:6px}
+    p{margin:6px 0 0}
     .notice{margin-top:6px;white-space:pre-wrap}
     .detail{font-size:12px;color:#d1d5db;margin-top:6px}
     .notice:empty,.detail:empty{display:none}
@@ -467,13 +484,13 @@
       throw new FieldError('alertStyle', 'Choose an alert style.');
     if (typeof watch.text !== 'string') throw new FieldError('text', 'Enter text or leave blank.');
     if (typeof watch.selector !== 'string' || !watch.selector.trim())
-      throw new FieldError('selector', 'Enter a CSS selector.');
+      throw new FieldError('selector', 'Enter the element to look for, as a CSS selector.');
     for (const key of /** @type {const} */ (['selector', 'readySelector'])) {
       if (!watch[key]) continue;
       try {
         document.querySelector(watch[key]);
       } catch {
-        throw new FieldError(key, 'This CSS selector is not valid.');
+        throw new FieldError(key, 'This isn’t a valid CSS selector. Check it for typing mistakes.');
       }
     }
   }
@@ -1007,10 +1024,12 @@
     const watch = url === null ? null : readWatch(url);
     if (url !== null && watch) {
       followWatchedPage(url);
-      shownUrl = url;
-      keepAlarmFor(watch);
-      if (!editor) runner = showWidget(watch);
-      return;
+      if (watch.enabled || watch.pendingAlert) {
+        shownUrl = url;
+        keepAlarmFor(watch);
+        if (!editor) runner = showWidget(watch);
+        return;
+      }
     }
     const away = findAwayAlarm();
     keepAlarmFor(away);
@@ -1061,19 +1080,29 @@
     if (!editor) boot();
   }
 
+  /**
+   * The settings panel: lists this site's watches and edits one at a time. It reads and writes
+   * watches through the storage functions and hands the page back to `boot()` when it closes.
+   */
   function openManager() {
     if (editor) return;
+    dismissTip();
+    const returnFocus = document.activeElement;
     if (runner) runner.suspendRefresh(); // Keep pending alerts active while editing.
     const host = document.createElement('div');
     editor = host;
-    host.style.cssText =
-      'position:fixed;inset:0;z-index:2147483647;background:#0009;display:grid;place-items:center;padding:12px;';
+    host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;';
     const root = host.attachShadow({ mode: SHADOW_MODE });
     adoptStyles(root, PANEL_CSS);
+    const backdrop = document.createElement('div');
+    backdrop.className = 'backdrop';
     const panel = document.createElement('section');
     panel.className = 'panel';
     panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-label', 'Manage Reload Until settings');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-labelledby', 'reload-until-title');
+    panel.tabIndex = -1;
+    backdrop.append(panel);
     /**
      * @template {keyof HTMLElementTagNameMap} K
      * @param {K} tag
@@ -1087,10 +1116,10 @@
       parent.append(el);
       return el;
     }
-    add('h2', 'Reload Until settings');
+    add('h2', 'Reload Until settings').id = 'reload-until-title';
     add(
       'p',
-      'Watches for this site only. Refreshing is suspended in this tab while this panel is open.',
+      'Only this site’s watches are listed here. While this panel is open, this tab doesn’t reload.',
     );
     const pickWrapper = add('div');
     pickWrapper.className = 'field';
@@ -1099,10 +1128,10 @@
     const picker = add('select', undefined, pickWrapper);
     picker.id = 'reload-until-saved-watch';
     picker.name = 'savedWatch';
-    const fresh = add('option', '＋ New watch for this page', picker);
+    const fresh = add('option', 'New watch for this page', picker);
     fresh.value = '';
     for (const watch of listWatches(location.origin)) {
-      const option = add('option', (watch.enabled ? 'ON — ' : 'OFF — ') + watch.url, picker);
+      const option = add('option', (watch.enabled ? 'On: ' : 'Off: ') + watch.url, picker);
       option.value = watch.url;
     }
     const form = add('form');
@@ -1117,15 +1146,25 @@
     });
     /** @type {Record<string, HTMLInputElement>} */
     const fields = {};
+    /** @param {string} name */
+    function group(name) {
+      const section = add('div', undefined, form);
+      section.className = 'group';
+      section.setAttribute('role', 'group');
+      const heading = add('h3', name, section);
+      heading.id = 'reload-until-group-' + form.childElementCount;
+      section.setAttribute('aria-labelledby', heading.id);
+      return section;
+    }
     /**
      * @param {string} name
      * @param {string} label
-     * @param {string} [type]
-     * @param {string} [help]
-     * @param {HTMLElement} [parent]
+     * @param {string} type
+     * @param {string} help
+     * @param {HTMLElement} parent
      * @param {string[][] | null} [choices]
      */
-    function field(name, label, type = 'text', help = '', parent = form, choices = null) {
+    function field(name, label, type, help, parent, choices = null) {
       const wrapper = add('div', undefined, parent);
       wrapper.className = type === 'checkbox' ? 'field check' : 'field';
       const id = 'reload-until-' + name;
@@ -1159,44 +1198,107 @@
       fields[name] = input;
       return input;
     }
+
+    const what = group('What to watch');
     field(
       'url',
-      'Page URL',
+      'Page address',
       'url',
-      'Exact URL on this site, including query parameters. The #fragment is ignored.',
+      'The exact address to reload, on this site. Anything after # is ignored.',
+      what,
     ).required = true;
-    field('enabled', 'Enabled — refresh this URL when it is open', 'checkbox');
-    field('intervalSeconds', 'Refresh interval (seconds)', 'number').min =
-      String(MIN_INTERVAL_SECONDS);
-    field('condition', 'Stop and notify when the target is…', 'text', '', form, [
-      ['appears', 'Appears'],
-      ['disappears', 'Disappears'],
-    ]);
     field(
       'selector',
-      'CSS selector',
+      'Element to look for',
       'text',
-      'Example: .alert.alert-error. Use body to search the whole page.',
+      'Enter a CSS selector, such as #price or .sold-out. To find one, right-click the element and select Inspect, then copy its selector from the developer tools. Enter body to check the whole page.',
+      what,
     ).required = true;
     field(
       'text',
       'Containing text (optional)',
       'textarea',
-      'Leave blank to match the selector alone. Extra whitespace is ignored.',
+      'Leave blank to match the element alone. Extra spaces and line breaks don’t matter.',
+      what,
     );
+    field(
+      'matchCase',
+      'Match case',
+      'checkbox',
+      'Treat capital and small letters in the text as different.',
+      what,
+    );
+    field('condition', 'Raise the alarm when the element', 'text', '', what, [
+      ['appears', 'Appears'],
+      ['disappears', 'Disappears'],
+    ]);
+    const ready = field(
+      'readySelector',
+      'Only check when the page has this element (optional)',
+      'text',
+      'A CSS selector, like the one above. If the page doesn’t have this element, the watch pauses instead of raising an alarm.',
+      what,
+    );
+    const readyHelp = /** @type {string} */ (ready.getAttribute('aria-describedby'));
+    const readyPrompt = add(
+      'p',
+      'Error pages and sign-in pages also make things disappear, which would raise a false alarm. Enter something that’s always on the real page, such as its main heading.',
+      /** @type {HTMLElement} */ (ready.parentElement),
+    );
+    readyPrompt.className = 'prompt';
+    readyPrompt.id = 'reload-until-ready-prompt';
+    function showReadyPrompt() {
+      const needed = fields.condition.value === 'disappears' && !ready.value.trim();
+      readyPrompt.hidden = !needed;
+      ready.setAttribute('aria-describedby', needed ? readyHelp + ' ' + readyPrompt.id : readyHelp);
+    }
+    fields.condition.addEventListener('change', showReadyPrompt);
+    ready.addEventListener('input', showReadyPrompt);
+
+    const when = group('When');
+    field(
+      'enabled',
+      'Watch this page',
+      'checkbox',
+      'While this is on, the page reloads whenever it’s open in a tab, until the alarm goes off.',
+      when,
+    );
+    field(
+      'intervalSeconds',
+      'Seconds between reloads',
+      'number',
+      'At least ' + MIN_INTERVAL_SECONDS + '.',
+      when,
+    ).min = String(MIN_INTERVAL_SECONDS);
+    field(
+      'settleSeconds',
+      'Seconds to wait after the page loads',
+      'number',
+      'Gives the page time to show its content before the first check.',
+      when,
+    );
+    field(
+      'confirmSeconds',
+      'Seconds the change must last',
+      'number',
+      'The alarm goes off only if the change is still there after this long, so a brief flicker doesn’t set it off.',
+      when,
+    );
+
+    const how = group('How to alert');
     field(
       'alertStyle',
       'Alert style',
       'text',
-      'Every alarm stays on the page and in the tab title until you click Acknowledge. Whether desktop notifications stay on screen, how urgent they look, and whether Do Not Disturb hides them depend on your browser and desktop. Insistent reminders and the sound need this tab to stay open, and browsers may block the sound until you have clicked on the page.',
-      form,
+      'Every alarm stays on the page and in the tab title until you select Acknowledge. Whether desktop notifications stay on screen, how urgent they look, and whether Do Not Disturb hides them depend on your browser and desktop. Insistent reminders and the sound need this tab to stay open, and browsers may block the sound until you have interacted with the page.',
+      how,
       [
         ['page', 'On this page only'],
         ['page-and-desktop', 'On this page, plus one desktop notification'],
         ['insistent', 'On this page, plus a desktop notification and a sound every minute'],
       ],
     );
-    const permission = add('div', undefined, form);
+    const permission = add('div', undefined, how);
     permission.className = 'field';
     const permissionStatus = add('small', '', permission);
     permissionStatus.id = 'reload-until-permission-status';
@@ -1231,40 +1333,39 @@
       }
     });
     showPermission();
-    const advanced = add('details', undefined, form);
-    add('summary', 'Timing and safeguards', advanced);
-    field('matchCase', 'Match case', 'checkbox', '', advanced);
-    field('settleSeconds', 'Initial rendering wait (seconds)', 'number', '', advanced);
-    field('confirmSeconds', 'Condition confirmation time (seconds)', 'number', '', advanced);
-    field(
-      'readySelector',
-      'Page-ready CSS selector (optional)',
-      'text',
-      'If missing, the watch pauses. Without this guard, an error or login page can make the target disappear.',
-      advanced,
-    );
+
     const error = add('div');
     error.className = 'error';
     error.setAttribute('role', 'alert');
+    const unsaved = add('div');
+    unsaved.className = 'unsaved';
+    unsaved.setAttribute('role', 'alert');
+    unsaved.hidden = true;
+    add('p', 'You have unsaved changes to this watch.', unsaved);
+    const unsavedActions = add('div', undefined, unsaved);
+    unsavedActions.className = 'actions';
     const actions = add('div');
     actions.className = 'actions';
     /**
      * @param {string} label
      * @param {() => void} fn
+     * @param {HTMLElement} [parent]
      */
-    function action(label, fn) {
-      const b = add('button', label, actions);
+    function action(label, fn, parent = actions) {
+      const b = add('button', label, parent);
       b.type = 'button';
       onUserEvent(b, 'click', fn);
       return b;
     }
+    const keepButton = action('Keep editing', keepEditing, unsavedActions);
+    action('Discard changes', discardEdits, unsavedActions);
     action('Save watch', saveFromForm);
     const remove = action('Delete watch', () => {
       if (!editingURL) return;
       try {
         if (readWatch(editingURL)?.pendingAlert)
           throw new Error(
-            'Close settings and Acknowledge the active alert before deleting this watch.',
+            'An alarm for this watch is waiting. Close the settings and select Acknowledge before deleting it.',
           );
         deleteWatch(editingURL);
         close();
@@ -1272,8 +1373,90 @@
         error.textContent = /** @type {Error} */ (e).message;
       }
     });
-    action('Close', close);
+    action('Close', () => guardEdits(close));
     let editingURL = '';
+    let savedForm = '';
+    /** @type {(() => void) | null} */
+    let afterDiscard = null;
+    /** @type {Element | null} */
+    let resumeFocus = null;
+
+    function formState() {
+      return JSON.stringify(
+        Object.values(fields).map((input) =>
+          input.type === 'checkbox' ? input.checked : input.value,
+        ),
+      );
+    }
+    /**
+     * Runs `proceed` right away if the form has no unsaved edits; otherwise asks first.
+     * @param {() => void} proceed
+     */
+    function guardEdits(proceed) {
+      if (formState() === savedForm) {
+        proceed();
+        return;
+      }
+      afterDiscard = proceed;
+      resumeFocus = root.activeElement;
+      unsaved.hidden = false;
+      keepButton.focus();
+    }
+    function keepEditing() {
+      afterDiscard = null;
+      unsaved.hidden = true;
+      /** @type {HTMLElement | null} */ (resumeFocus)?.focus();
+      resumeFocus = null;
+    }
+    function discardEdits() {
+      const proceed = afterDiscard;
+      afterDiscard = null;
+      resumeFocus = null;
+      unsaved.hidden = true;
+      proceed?.();
+    }
+
+    /** The panel's controls that keyboard focus can reach, in order. */
+    function focusStops() {
+      const controls =
+        /** @type {NodeListOf<HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>} */ (
+          panel.querySelectorAll('button, input, select, textarea')
+        );
+      return Array.from(controls).filter(
+        (control) => !control.disabled && control.getClientRects().length > 0,
+      );
+    }
+    onUserEvent(panel, 'keydown', (event) => {
+      const { key, shiftKey } = /** @type {KeyboardEvent} */ (event);
+      if (key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (unsaved.hidden) guardEdits(close);
+        else keepEditing();
+        return;
+      }
+      if (key !== 'Tab') return;
+      const stops = focusStops();
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      if (!first || !last) return;
+      const active = root.activeElement;
+      const inside = active !== null && active !== panel && panel.contains(active);
+      if (shiftKey && (active === first || !inside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!shiftKey && (active === last || !inside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+    backdrop.addEventListener('mousedown', (event) => {
+      if (event.target === backdrop) event.preventDefault();
+    });
+    /** @param {FocusEvent} event */
+    function holdFocus(event) {
+      if (event.target !== host) fields.url.focus();
+    }
 
     function clearFieldErrors() {
       for (const input of Object.values(fields)) {
@@ -1292,8 +1475,6 @@
       /** @type {HTMLElement} */ (input.parentElement).append(message);
       input.setAttribute('aria-invalid', 'true');
       input.setAttribute('aria-errormessage', message.id);
-      const section = input.closest('details');
-      if (section) section.open = true;
       input.focus();
     }
 
@@ -1314,6 +1495,8 @@
       }
       remove.disabled = !url;
       error.textContent = '';
+      showReadyPrompt();
+      savedForm = formState();
     }
     function saveFromForm() {
       clearFieldErrors();
@@ -1321,7 +1504,7 @@
       try {
         if (editingURL && readWatch(editingURL)?.pendingAlert)
           throw new Error(
-            'Close settings and Acknowledge the active alert before editing this watch.',
+            'An alarm for this watch is waiting. Close the settings and select Acknowledge before editing it.',
           );
         const draft = /** @type {Record<string, unknown>} */ ({ ...DEFAULTS });
         for (const [name, input] of Object.entries(fields)) {
@@ -1347,7 +1530,7 @@
         if (watch.url !== editingURL && readWatch(watch.url))
           throw new FieldError(
             'url',
-            'A watch already exists for this URL. Select it from Saved watches to edit it.',
+            'This address already has a watch. Select it from Saved watches to edit it.',
           );
         watch.pendingAlert = readWatch(watch.url)?.pendingAlert ?? null;
         writeWatch(watch);
@@ -1359,25 +1542,93 @@
       }
     }
     function close() {
+      document.removeEventListener('focusin', holdFocus, true);
       host.remove();
       editor = null;
       boot();
+      if (returnFocus?.isConnected) /** @type {HTMLElement} */ (returnFocus).focus();
+      else if (returnFocus) runner?.focus();
     }
-    picker.addEventListener('change', () => fill(picker.value));
+    picker.addEventListener('change', () => {
+      const chosen = picker.value;
+      picker.value = editingURL;
+      guardEdits(() => {
+        picker.value = chosen;
+        fill(chosen);
+      });
+    });
     const here = currentUrl();
     const initial = here !== null && readWatch(here) ? here : '';
     picker.value = initial;
     fill(initial);
-    root.append(panel);
+    root.append(backdrop);
     document.documentElement.append(host);
     fields.url.focus();
+    document.addEventListener('focusin', holdFocus, true);
+  }
+
+  /** @type {HTMLElement | null} */
+  let tipHost = null;
+
+  function dismissTip() {
+    tipHost?.remove();
+    tipHost = null;
+  }
+
+  /** Tells someone who just installed the script where its settings are. */
+  function showTip() {
+    const host = document.createElement('div');
+    tipHost = host;
+    host.id = 'reload-until-tip';
+    host.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:2147483647;max-width:360px;';
+    const root = host.attachShadow({ mode: SHADOW_MODE });
+    adoptStyles(root, WIDGET_CSS);
+    const box = document.createElement('section');
+    box.className = 'box';
+    box.setAttribute('aria-label', 'Reload Until tip');
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = 'Reload Until is installed';
+    const how = document.createElement('p');
+    const command = document.createElement('strong');
+    command.textContent = MENU_COMMAND;
+    how.append(
+      'To watch a page, open it, then open your userscript manager’s menu and select ',
+      command,
+      '.',
+    );
+    const once = document.createElement('p');
+    once.className = 'detail';
+    once.textContent = 'This tip shows only once.';
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    /**
+     * @param {string} label
+     * @param {() => void} fn
+     */
+    function button(label, fn) {
+      const element = document.createElement('button');
+      element.type = 'button';
+      element.textContent = label;
+      onUserEvent(element, 'click', fn);
+      actions.append(element);
+    }
+    button('Open settings', openManager);
+    button('Dismiss', dismissTip);
+    box.append(name, how, once, actions);
+    root.append(box);
+    document.documentElement.append(host);
   }
 
   function initialize() {
-    GM_registerMenuCommand('Reload Until: Manage watches', openManager);
+    GM_registerMenuCommand(MENU_COMMAND, openManager);
     const url = currentUrl();
     if (url !== null) claimHandoff(url);
     boot();
+    if (url !== null && !GM_getValue(HINT_KEY, false)) {
+      GM_setValue(HINT_KEY, true);
+      showTip();
+    }
   }
 
   /**
@@ -1406,6 +1657,21 @@
     adoptStyles(root, WIDGET_CSS);
     const box = document.createElement('section');
     box.className = 'box';
+    box.setAttribute('aria-labelledby', 'reload-until-name');
+    const head = document.createElement('div');
+    head.className = 'head';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.id = 'reload-until-name';
+    name.textContent = 'Reload Until';
+    const sizeButton = document.createElement('button');
+    sizeButton.type = 'button';
+    sizeButton.setAttribute('aria-controls', 'reload-until-body');
+    head.append(name, sizeButton);
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.id = 'reload-until-body';
+    let collapsed = sessionGet(SESSION_COLLAPSED_KEY) === '1';
     const status = document.createElement('div');
     status.setAttribute('role', 'status');
     const notice = document.createElement('div');
@@ -1431,18 +1697,27 @@
     const toggle = button('Enable', () => (watcher.running ? watcher.pause() : start(true)));
     /** @type {HTMLButtonElement | null} */
     let testButton = null;
+    /** @type {HTMLButtonElement | null} */
+    let settingsButton = null;
     if (away) {
       toggle.hidden = true;
       button('Open watched page', () => location.assign(watch.url));
     } else {
-      button('Settings', openManager);
+      settingsButton = button('Settings', openManager);
       testButton = button('Test alert', showTest);
     }
     const acknowledgeButton = button('Acknowledge', acknowledge);
     acknowledgeButton.hidden = true;
-    box.append(status, notice, detail, actions);
+    body.append(status, notice, detail, actions);
+    box.append(head, body);
     root.append(box);
     document.documentElement.append(host);
+    onUserEvent(sizeButton, 'click', () => {
+      collapsed = !collapsed;
+      sessionSet(SESSION_COLLAPSED_KEY, collapsed ? '1' : null);
+      showSize();
+    });
+    showSize();
 
     const watcher = createWatcher(watch, {
       onStarted() {
@@ -1451,16 +1726,16 @@
       },
       onProgress({ phase, secondsLeft, found }) {
         if (phase === 'settling') {
-          status.textContent = 'Watching: waiting for the page to settle…';
+          status.textContent = 'Watching: giving the page time to load…';
           watchedTitle('wait ' + secondsLeft + 's');
         } else if (phase === 'confirming') {
-          status.textContent = 'Confirming condition: ' + secondsLeft + 's…';
+          status.textContent = 'Checking that the change lasts: ' + secondsLeft + 's…';
           watchedTitle('confirm ' + secondsLeft + 's');
         } else {
           status.textContent =
-            'Watching: target ' +
-            (found ? 'found' : 'not found') +
-            '. Reload in ' +
+            'Watching: the element is ' +
+            (found ? 'on the page' : 'not on the page') +
+            '. Next reload in ' +
             secondsLeft +
             's.';
           watchedTitle(phase === 'reloading' ? 'reloading' : secondsLeft + 's');
@@ -1471,18 +1746,18 @@
         if (!showing) restoreTitle();
         status.textContent =
           reason === 'user'
-            ? 'Paused'
+            ? 'Paused. The watch stays off until you select Enable or turn it on in Settings.'
             : reason === 'not-ready'
-              ? 'Paused: page is not ready. Check login/loading, then Enable.'
+              ? 'Paused: the page doesn’t have the element that shows it loaded. If you were signed out, sign in again, then select Enable.'
               : reason === 'invalid'
-                ? 'Paused: invalid configuration — ' + problem
+                ? 'Paused: this watch’s settings need fixing. ' + problem
                 : reason === 'storage'
-                  ? 'Paused: browser storage is unavailable; cannot safely retain stop state.'
-                  : 'Paused: configuration/page error — ' + problem;
+                  ? 'Paused: the script can’t save to its storage, so it can’t keep track of an alarm.'
+                  : 'Paused: something went wrong. ' + problem;
       },
       onTriggered(persisted) {
         toggle.textContent = 'Enable';
-        status.textContent = 'Stopped: condition met. Enable to watch again.';
+        status.textContent = 'Stopped: the page changed. Select Enable to watch again.';
         showAlarm();
         if (!persisted)
           notice.textContent += '\nThe alarm could not be saved; avoid reloading this page.';
@@ -1533,7 +1808,7 @@
             : 'Reload Until: the page changed',
         text:
           alarmText() +
-          ' The alarm stays on the page until you click Acknowledge.' +
+          ' The alarm stays on the page until you select Acknowledge.' +
           (watch.alertStyle === 'insistent'
             ? ' While this tab stays open, a reminder follows every minute until then.'
             : ''),
@@ -1543,7 +1818,7 @@
     function stoppedStatus() {
       return watch.pendingAlert?.kind === 'redirect'
         ? 'Stopped: a reload ended on a different page.'
-        : 'Stopped: condition met.';
+        : 'Stopped: the page changed.';
     }
 
     /** @param {string} text */
@@ -1552,6 +1827,17 @@
       acknowledgeButton.hidden = false;
       if (testButton) testButton.hidden = true;
       box.classList.add('alarm');
+      showSize();
+    }
+
+    /** Folds the widget down to its name, except while it shows an alarm. */
+    function showSize() {
+      const folded = collapsed && !showing;
+      box.classList.toggle('collapsed', folded);
+      body.hidden = folded;
+      sizeButton.hidden = showing !== null;
+      sizeButton.textContent = folded ? 'Show' : 'Hide';
+      sizeButton.setAttribute('aria-expanded', String(!folded));
     }
 
     function clearNotice() {
@@ -1562,6 +1848,7 @@
       if (testButton) testButton.hidden = false;
       box.classList.remove('alarm');
       restoreTitle();
+      showSize();
     }
 
     function showAlarm() {
@@ -1571,7 +1858,7 @@
       testNotification = undefined;
       showing = 'alarm';
       rememberAlarm(watch.url, alert.watchOrigin);
-      showNotice('⚠ ' + alarmText() + '\nClick Acknowledge to dismiss this alarm.');
+      showNotice('⚠ ' + alarmText() + '\nSelect Acknowledge to dismiss this alarm.');
       setTitle('⚠ ACKNOWLEDGE — ' + originalTitle);
       soundAlarm(watch, alarmMessage(), (problem) => {
         detail.textContent = problem;
@@ -1583,7 +1870,7 @@
       if (showing) return;
       showing = 'test';
       showNotice(
-        '⚠ Test alert: this is how an alarm shows on this page. Your watch is unchanged.\nClick Acknowledge to dismiss it.',
+        '⚠ Test alert: this is how an alarm shows on this page. Your watch is unchanged.\nSelect Acknowledge to dismiss it.',
       );
       setTitle('⚠ TEST — ' + originalTitle);
       detail.textContent = '';
@@ -1622,7 +1909,7 @@
           return;
         }
         forgetAlarm(watch.url);
-        status.textContent = stopped + ' Enable to watch again.';
+        status.textContent = stopped + ' Select Enable to watch again.';
       }
       silenceAlarm();
       clearNotice();
@@ -1658,6 +1945,9 @@
         testNotification?.close();
         restoreTitle();
         host.remove();
+      },
+      focus() {
+        (settingsButton && !body.hidden ? settingsButton : sizeButton).focus();
       },
     };
   }

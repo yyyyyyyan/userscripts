@@ -22,6 +22,19 @@ const WATCHING = /^\u{1F441}/u;
 const ALARM = /^\u{26A0}/u;
 const MENU_COMMAND = 'Reload Until: Manage watches';
 
+/** The settings panel's field labels, exactly as shown. */
+const LABELS = {
+  url: 'Page address',
+  condition: 'Raise the alarm when the element',
+  selector: 'Element to look for',
+  ready: 'Only check when the page has this element (optional)',
+  enabled: 'Watch this page',
+  interval: 'Seconds between reloads',
+  settle: 'Seconds to wait after the page loads',
+  confirm: 'Seconds the change must last',
+  newWatch: 'New watch for this page',
+};
+
 /**
  * @param {(env: { vm: Vm, site: Site }) => Promise<void>} body
  */
@@ -64,23 +77,35 @@ async function openPanel(vm, page) {
  * @property {string} selector
  * @property {number} [interval]
  * @property {'page' | 'page-and-desktop' | 'insistent'} [alertStyle]
+ * @property {boolean} [enabled]
  */
+
+/**
+ * @param {Locator} panel
+ * @param {string} label
+ * @returns {Locator}
+ */
+function field(panel, label) {
+  return panel.getByLabel(label, { exact: true });
+}
 
 /**
  * @param {Locator} panel
  * @param {WatchFields} watch
  */
-async function fillWatch(panel, { condition, selector, interval = 10, alertStyle }) {
-  await panel.getByLabel('Enabled', { exact: false }).check();
-  await panel.getByLabel('Refresh interval (seconds)').fill(String(interval));
-  await panel.getByLabel('Stop and notify when the target').selectOption({ label: condition });
-  await panel.getByLabel('CSS selector', { exact: true }).fill(selector);
+async function fillWatch(
+  panel,
+  { condition, selector, interval = 10, alertStyle, enabled = true },
+) {
+  await field(panel, LABELS.enabled).setChecked(enabled);
+  await field(panel, LABELS.interval).fill(String(interval));
+  await field(panel, LABELS.condition).selectOption({ label: condition });
+  await field(panel, LABELS.selector).fill(selector);
   if (alertStyle) {
     await panel.getByLabel('Alert style').selectOption(alertStyle);
   }
-  await panel.getByText('Timing and safeguards').click();
-  await panel.getByLabel('Initial rendering wait (seconds)').fill('1');
-  await panel.getByLabel('Condition confirmation time (seconds)').fill('0');
+  await field(panel, LABELS.settle).fill('1');
+  await field(panel, LABELS.confirm).fill('0');
 }
 
 /**
@@ -112,7 +137,22 @@ async function storedValues(vm) {
         continue;
       }
       for (const [name, raw] of Object.entries(stored)) {
-        values[name] = typeof raw === 'string' && raw[0] === 'o' ? JSON.parse(raw.slice(1)) : raw;
+        if (typeof raw !== 'string') {
+          values[name] = raw;
+          continue;
+        }
+        // Violentmonkey prefixes each value with its type: object, boolean, number or string.
+        const body = raw.slice(1);
+        values[name] =
+          raw[0] === 'o'
+            ? JSON.parse(body)
+            : raw[0] === 'b'
+              ? body === 'true'
+              : raw[0] === 'n'
+                ? Number(body)
+                : raw[0] === 's'
+                  ? body
+                  : raw;
       }
     }
     return values;
@@ -294,10 +334,11 @@ test('alarm survives reload and clears only on Acknowledge', async () => {
     await expect(widget(page).getByRole('alert')).toBeHidden();
     await expect(widget(page).getByRole('status')).not.toHaveText(/alert/i);
 
+    // Acknowledging leaves the watch off, and a watch that is off shows nothing.
     await page.reload();
-    await expect(widget(page).getByRole('status')).toBeVisible();
     await expect(page).toHaveTitle('Appear');
-    await expect(widget(page).getByRole('button', { name: 'Acknowledge' })).toBeHidden();
+    await page.waitForTimeout(2000);
+    await expect(widget(page)).toHaveCount(0);
   });
 });
 
@@ -309,7 +350,7 @@ test('interval below 10 seconds is refused', async () => {
     await fillWatch(panel, { condition: 'Appears', selector: '#target', interval: 5 });
     await panel.getByRole('button', { name: 'Save watch' }).click();
 
-    const interval = panel.getByLabel('Refresh interval (seconds)');
+    const interval = field(panel, LABELS.interval);
     await expect(interval).toHaveAttribute('aria-invalid', 'true');
     await expect(interval).toHaveAccessibleErrorMessage(/at least 10 seconds/);
     await expect(panel).toBeVisible();
@@ -375,9 +416,9 @@ test('reloads in another tab change no watch and keep an alarm acknowledged', as
     expect(pendingAlertOf(await storedValues(vm), `watch:${site.origin}/appear?a`)).toBeNull();
 
     await pageA.reload();
-    await expect(widget(pageA).getByRole('status')).toBeVisible();
-    await expect(widget(pageA).getByRole('button', { name: 'Acknowledge' })).toBeHidden();
     await expect(pageA).toHaveTitle('Appear');
+    await pageA.waitForTimeout(2000);
+    await expect(widget(pageA)).toHaveCount(0);
   });
 });
 
@@ -404,9 +445,9 @@ test("a URL with credentials doesn't break the script", async () => {
     await expect(page).toHaveTitle('Plain');
 
     const panel = await openPanel(vm, page);
-    const url = panel.getByLabel('Page URL');
+    const url = field(panel, LABELS.url);
     await url.fill(`http://u:p@127.0.0.1:${site.port}/plain`);
-    await panel.getByLabel('CSS selector', { exact: true }).fill('#target');
+    await field(panel, LABELS.selector).fill('#target');
     await panel.getByRole('button', { name: 'Save watch' }).click();
     await expect(url).toHaveAttribute('aria-invalid', 'true');
     expect(errors).toEqual([]);
@@ -653,10 +694,10 @@ test("panel lists only this site's watches", async () => {
     expect(everything).toContain('/appear?mine');
     expect(everything).not.toContain('other.test');
 
-    await panel.getByLabel('Saved watches').selectOption({ label: '＋ New watch for this page' });
-    const url = panel.getByLabel('Page URL');
+    await panel.getByLabel('Saved watches').selectOption({ label: LABELS.newWatch });
+    const url = field(panel, LABELS.url);
     await url.fill(`http://other.test:${site.port}/plain`);
-    await panel.getByLabel('CSS selector', { exact: true }).fill('#target');
+    await field(panel, LABELS.selector).fill('#target');
     await panel.getByRole('button', { name: 'Save watch' }).click();
     await expect(url).toHaveAttribute('aria-invalid', 'true');
     await expect(url).toHaveAccessibleErrorMessage(/this site/);
@@ -832,5 +873,205 @@ test('with permission, the alarm uses a site notification that asks to stay unti
 
     await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
     await expect.poll(async () => (await record()).closed).toBe(1);
+  });
+});
+
+/**
+ * @param {Page} page
+ * @returns {Promise<boolean>} Whether keyboard focus is inside the settings panel.
+ */
+function focusInPanel(page) {
+  return page.evaluate(
+    () => document.activeElement?.shadowRoot?.querySelector('[role="dialog"]') != null,
+  );
+}
+
+test('panel has three groups', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/plain`);
+    const panel = await openPanel(vm, page);
+
+    await expect(panel).toHaveAttribute('aria-modal', 'true');
+    await expect(panel.getByRole('heading', { level: 3 })).toHaveText([
+      'What to watch',
+      'When',
+      'How to alert',
+    ]);
+    /** @type {Record<string, string[]>} */
+    const groups = {
+      'What to watch': [LABELS.url, LABELS.condition, LABELS.selector, LABELS.ready],
+      When: [LABELS.enabled, LABELS.interval, LABELS.settle, LABELS.confirm],
+      'How to alert': ['Alert style'],
+    };
+    for (const [name, labels] of Object.entries(groups)) {
+      const group = panel.getByRole('group', { name, exact: true });
+      for (const label of labels) {
+        await expect(field(group, label), `${label} is under ${name}`).toBeVisible();
+      }
+    }
+    const labels = await panel.locator('label').allTextContents();
+    expect(
+      labels.filter((text) => /\b(URL|CSS|selector|rendering|condition)\b/i.test(text)),
+    ).toEqual([]);
+  });
+});
+
+test('disappears asks for a page-ready guard', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/disappear`);
+    const panel = await openPanel(vm, page);
+    const prompt = panel.getByText(/sign-in page/);
+    await expect(prompt).toBeHidden();
+
+    await field(panel, LABELS.condition).selectOption({ label: 'Disappears' });
+    await expect(prompt).toBeVisible();
+    const ready = field(panel, LABELS.ready);
+    await expect(ready).toHaveAccessibleDescription(/sign-in page/);
+
+    await ready.fill('h1');
+    await expect(prompt).toBeHidden();
+    await ready.fill('');
+    await expect(prompt).toBeVisible();
+    await field(panel, LABELS.condition).selectOption({ label: 'Appears' });
+    await expect(prompt).toBeHidden();
+  });
+});
+
+test('unsaved edits warn before switching or closing', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/appear?edits`;
+    await page.goto(watched);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+
+    const panel = await openPanel(vm, page);
+    const picker = panel.getByLabel('Saved watches');
+    await expect(picker).toHaveValue(watched);
+    const selector = field(panel, LABELS.selector);
+    await selector.fill('#edited');
+    const warning = panel.getByRole('alert').filter({ hasText: /unsaved/i });
+
+    await picker.selectOption({ label: LABELS.newWatch });
+    await expect(warning).toBeVisible();
+    await expect(picker).toHaveValue(watched);
+    await expect(selector).toHaveValue('#edited');
+    await panel.getByRole('button', { name: 'Keep editing' }).click();
+    await expect(warning).toBeHidden();
+    await expect(selector).toHaveValue('#edited');
+
+    await panel.getByRole('button', { name: 'Close' }).click();
+    await expect(warning).toBeVisible();
+    await expect(panel).toBeVisible();
+    await panel.getByRole('button', { name: 'Discard changes' }).click();
+    await expect(panel).toBeHidden();
+    const watch = /** @type {{ selector?: string }} */ (
+      (await storedValues(vm))[`watch:${watched}`]
+    );
+    expect(watch.selector).toBe('#never-there');
+  });
+});
+
+test('Escape closes the panel and focus returns to the page', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/login`);
+    await page.locator('input[name="user"]').focus();
+    const panel = await openPanel(vm, page);
+    await expect(panel).toHaveAttribute('aria-modal', 'true');
+    expect(await focusInPanel(page), 'the panel takes focus').toBe(true);
+
+    for (let step = 0; step < 25; step++) {
+      await page.keyboard.press('Tab');
+    }
+    expect(await focusInPanel(page), 'Tab stays in the panel').toBe(true);
+    for (let step = 0; step < 25; step++) {
+      await page.keyboard.press('Shift+Tab');
+    }
+    expect(await focusInPanel(page), 'Shift+Tab stays in the panel').toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+    await expect(page.locator('input[name="user"]')).toBeFocused();
+  });
+});
+
+test('first-run hint shows once', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/plain`);
+    const tip = page.getByRole('region', { name: 'Reload Until tip', exact: true });
+    await expect(tip).toContainText(MENU_COMMAND);
+    await expect(tip).toContainText(/your userscript manager.s menu/);
+    await expect.poll(async () => (await storedValues(vm))['hint-shown']).toBe(true);
+
+    await tip.getByRole('button', { name: 'Dismiss' }).click();
+    await expect(tip).toHaveCount(0);
+    await page.reload();
+    await expect(page).toHaveTitle('Plain');
+    await page.waitForTimeout(2000);
+    await expect(tip).toHaveCount(0);
+
+    const another = await vm.context.newPage();
+    await another.goto(`${site.origin}/appear`);
+    await another.waitForTimeout(2000);
+    await expect(another.getByRole('region', { name: 'Reload Until tip' })).toHaveCount(0);
+  });
+});
+
+test('disabled watch shows nothing', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    const watched = `${site.origin}/appear?off`;
+    await page.goto(watched);
+    await createWatch(vm, page, {
+      condition: 'Appears',
+      selector: '#never-there',
+      enabled: false,
+    });
+    await page.waitForTimeout(2000);
+    await expect(widget(page)).toHaveCount(0);
+    await expect(page).toHaveTitle('Appear');
+    await page.reload();
+    await page.waitForTimeout(2000);
+    await expect(widget(page)).toHaveCount(0);
+    await expect(page).toHaveTitle('Appear');
+
+    const panel = await openPanel(vm, page);
+    await field(panel, LABELS.enabled).check();
+    await panel.getByRole('button', { name: 'Save watch' }).click();
+    await expect(page).toHaveTitle(WATCHING);
+    await widget(page).getByRole('button', { name: 'Disable' }).click();
+    await expect(widget(page).getByRole('status')).toHaveText(/Paused/);
+    await page.reload();
+    await expect(page).toHaveTitle('Appear');
+    await page.waitForTimeout(2000);
+    await expect(widget(page)).toHaveCount(0);
+  });
+});
+
+test('widget is labeled and collapsible', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.goto(`${site.origin}/appear?collapse`);
+    await createWatch(vm, page, { condition: 'Appears', selector: '#never-there' });
+    const box = widget(page).getByRole('region', { name: 'Reload Until', exact: true });
+    await expect(box).toBeVisible();
+
+    const hide = box.getByRole('button', { name: 'Hide' });
+    await expect(hide).toHaveAttribute('aria-expanded', 'true');
+    await hide.click();
+    await expect(box.getByRole('status')).toBeHidden();
+    await expect(box).toBeVisible();
+    await expect(page).toHaveTitle(WATCHING);
+
+    await page.reload();
+    await expect(page).toHaveTitle(WATCHING);
+    const show = widget(page).getByRole('button', { name: 'Show' });
+    await expect(show).toHaveAttribute('aria-expanded', 'false');
+    await expect(widget(page).getByRole('status')).toBeHidden();
+    await show.click();
+    await expect(widget(page).getByRole('status')).toBeVisible();
   });
 });

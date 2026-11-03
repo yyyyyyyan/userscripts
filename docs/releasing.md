@@ -130,6 +130,9 @@ these lines to its checklist:
       alarm on the page where it ended.
 - [ ] Tampermonkey: an alarm shows its desktop notification, and
       **Acknowledge** clears the alarm on the page.
+- [ ] Tampermonkey: after a fresh install, the first page shows the one-time
+      tip, and the command it names appears in Tampermonkey's menu with the
+      same words.
 ```
 
 While the repository is private, raw files need a sign-in, so a pull request's
