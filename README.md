@@ -8,11 +8,11 @@ as it is released.
 
 | Script | What it does | Where it runs | Install |
 |---|---|---|---|
-| [Per-Site Light/Dark Mode](scripts/per-site-light-dark-mode/README.md) | Asks each site for its own light or dark theme, remembered per site. | Every website | Coming soon |
+| [Per-Site Light/Dark Mode](scripts/per-site-light-dark-mode/README.md) | Asks each site for its own light or dark theme, remembered per site. | Every website | [Install][per-site] |
 
-Per-Site Light/Dark Mode is the first script. Its install link will replace
-"Coming soon" once it is on Greasy Fork. Later scripts get a row in this table
-too.
+Later scripts get a row in this table when they are released.
+
+[per-site]: https://greasyfork.org/en/scripts/603623-per-site-light-dark-mode
 
 ## Get a userscript manager
 
