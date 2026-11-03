@@ -34,6 +34,6 @@ describe('commitlint config', () => {
     assert.notEqual(lint('feat: Add an alarm sound'), 0);
     assert.notEqual(lint('build: Bump everything'), 0);
     assert.notEqual(lint('Bump the dependencies group'), 0);
-    assert.notEqual(lint('build(deps): Bump the "dependencies" group with 1 update'), 0);
+    assert.notEqual(lint('chores(deps): Bump the "dependencies" group with 1 update'), 0);
   });
 });
