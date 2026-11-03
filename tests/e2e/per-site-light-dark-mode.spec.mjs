@@ -872,6 +872,8 @@ test('status explains an early theme check in plain sentences', async () => {
     expect(status.trimStart().startsWith('{')).toBe(false);
     expect(status).toContain('Dark is saved for 127.0.0.1.');
     expect(status).toContain(EARLY_WARNING);
+    expect(status).toContain('Synchronous page mode');
+    expect(status).toContain('injection mode to Instant');
     expect(sentences(status).length).toBeGreaterThanOrEqual(2);
     expect(sentences(status).length).toBeLessThanOrEqual(4);
   });
@@ -910,10 +912,30 @@ test('an unrelated script that ran first does not hide that the page asked later
     await choose(vm.context, vm.extensionId, page, 'Dark for');
     expect(await schemeReadByPage(page)).toBe('dark');
     const status = await readStatus(vm, page);
-    expect(status).toContain(
-      'It applied: this page asked which theme you prefer and was told dark.',
-    );
+    expect(status).toContain('This page asked which theme you prefer and was told dark.');
+    expect(status).not.toContain('It applied');
     expect(status).not.toContain(EARLY_WARNING);
+  });
+});
+
+test('status keeps an unreadable style sheet in view when the page asked late', async () => {
+  const html = await fixture('late-check.html');
+  const routes = {
+    /** @param {Request} req @param {Response} res */
+    '/': (req, res) => {
+      const port = String(req.headers.host).split(':')[1];
+      const sheet = `<link rel="stylesheet" href="http://other.test:${port}/remote.css" />`;
+      pausedAfterMark(html.replace('<title>', `${sheet}<title>`))(req, res);
+    },
+    '/remote.css': stylesheet(':root { --remote: 1; }'),
+  };
+  await withSites({ routes, hosts: ['other.test'] }, async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    const status = await readStatus(vm, page);
+    expect(status).toContain('This page asked which theme you prefer and was told dark.');
+    expect(status).toContain('could not be read');
+    expect(status).not.toContain('have no dark rules');
   });
 });
 
@@ -933,7 +955,7 @@ test('a script still waiting to download does not count as having run', async ()
     await choose(vm.context, vm.extensionId, page, 'Dark for');
     expect(await schemeReadByPage(page)).toBe('dark');
     expect(await readStatus(vm, page)).toBe(
-      'Dark is saved for 127.0.0.1. It applied: this page asked which theme you prefer and was told dark.',
+      'Dark is saved for 127.0.0.1. This page asked which theme you prefer and was told dark. Its style sheets have no dark rules the script could switch, so whether it changes is up to its own scripts.',
     );
   });
 });
