@@ -1,0 +1,11 @@
+userscript
+userscripts
+Violentmonkey
+Tampermonkey
+Greasemonkey
+Greasy Fork
+GM_[A-Za-z]+
+oxlint
+oxfmt
+prek
+[Uu]serscripts?

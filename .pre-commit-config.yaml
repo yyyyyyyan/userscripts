@@ -1,0 +1,77 @@
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^COPYING$
+      - id: end-of-file-fixer
+        exclude: ^COPYING$
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+      - id: detect-private-key
+      - id: deny-pattern
+        name: deny U+FFFD replacement character
+        args: ['\x{FFFD}']
+      - id: require-pattern
+        name: require @license GPL-3.0-or-later
+        alias: require-license
+        args: ['(?m)^// @license\s+GPL-3\.0-or-later$']
+        files: ^scripts/.*\.user\.js$
+      - id: require-pattern
+        name: require @namespace yyyyyyyan/<slug>
+        alias: require-namespace
+        args: ['(?m)^// @namespace\s+yyyyyyyan/\S+$']
+        files: ^scripts/.*\.user\.js$
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.51.1
+    hooks:
+      - id: typos
+        exclude: ^COPYING$
+
+  - repo: https://github.com/rvben/rumdl-pre-commit
+    rev: v0.3.0
+    hooks:
+      - id: rumdl
+        exclude: ^COPYING$
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      - id: zizmor
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: local
+    hooks:
+      - id: oxfmt
+        name: oxfmt
+        language: system
+        entry: npm exec --no -- oxfmt
+        types_or: [javascript, json]
+      - id: oxlint
+        name: oxlint
+        language: system
+        entry: npm exec --no -- oxlint
+        files: ^scripts/.*\.user\.js$
+      - id: tsc
+        name: tsc
+        language: system
+        entry: npm exec --no -- tsc -p jsconfig.json
+        files: ^scripts/.*\.user\.js$
+        pass_filenames: false
+      - id: commitlint-main
+        name: commitlint (pushes to main)
+        language: system
+        entry: node tools/commitlint-main.mjs
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
