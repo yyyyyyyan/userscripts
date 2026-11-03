@@ -1,3 +1,116 @@
 # Per-Site Light/Dark Mode
 
-Asks each site for its own light or dark theme, remembered per site.
+Makes a site show its own light or dark theme, whatever your browser is set to,
+and remembers your choice for that site. It switches to the theme the site
+already has. It never generates or inverts colors, so it is not a dark mode for
+sites that don't have one.
+
+![Python's documentation twice, side by side. On the left the page is light, with your browser in light and no choice saved. On the right the same page is dark after choosing Dark for the site.](images/before-after.png)
+
+It helps on sites that have both a light and a dark theme and follow your
+browser's setting. Tested on react.dev, developer.mozilla.org, github.com,
+docs.python.org, w3.org and wiki.archlinux.org.
+
+## How to use
+
+1. Open a site that has both a light and a dark theme.
+2. Open your userscript manager's menu for the page.
+3. Under Per-Site Light/Dark Mode, choose **Dark for <site> (reloads the tab)**.
+   To get the light theme instead, choose **Light for <site> (reloads the
+   tab)**.
+4. Wait for the tab to reload. The site now shows the theme you chose.
+5. If nothing changed, open the menu again and choose **Status**. It tells you
+   in plain words whether your choice applied and what to try next.
+
+To undo a choice, choose **Browser default for <site> (reloads the tab)**. The
+site then follows your browser again.
+
+If the site has its own theme button, set it to System or Automatic. A theme you
+pick with the site's own button wins over this script.
+
+## Settings
+
+There is no settings page. The menu is the only control, and it saves one choice
+per site:
+
+- **Light**: the site shows its light theme.
+- **Dark**: the site shows its dark theme.
+- **Browser default**: the script does nothing on that site.
+
+The menu marks your current choice with a check mark, and it names the site the
+choice is saved for.
+
+A choice also covers the site's subdomains. If you choose Dark on `example.com`,
+then `www.example.com` and `docs.example.com` use Dark too. To give one
+subdomain a different theme, open that subdomain and choose again. A choice
+saved on a subdomain wins over the one from its parent. **Browser default** on a
+subdomain makes it ignore the parent's choice.
+
+A choice always saves on the site you are on, never on its parent. IP addresses
+match only themselves.
+
+## Where it runs and what it can access
+
+The script runs on every `http` and `https` page, because you can pick any site.
+On a site where you have not made a choice, it does nothing. It does not run
+inside frames, so embedded content, such as a video player, is left alone.
+
+It asks your userscript manager for these permissions:
+
+- `unsafeWindow`: to reach the page's own scripts. This is how the script
+  answers the page when it asks whether you prefer a light or dark theme.
+- `GM_getValue`, `GM_setValue` and `GM_deleteValue`: to read, save and remove
+  your choices in the manager's storage.
+- `GM_registerMenuCommand`: to add the entries to your manager's menu.
+
+It reads the page's style sheets so it can switch their light and dark rules. It
+does not read your forms, cookies or the text of the page, and it makes no
+network requests.
+
+## Limitations
+
+- It only changes sites that have a dark theme of their own. On a site with just
+  one theme, **Status** says the page has not asked which theme you prefer.
+- It can't read some style sheets that a site loads from another web address
+  without allowing access. Parts of the page that depend on them may not switch.
+  **Status** counts them.
+- A page that checks your theme very early, before the script runs, may keep
+  your browser's setting. **Status** says so. Reloading the page or setting the
+  site's own theme to System or Automatic often fixes it.
+- A site that saves your theme with your account, or in its own button, decides
+  for itself. The script does not override it.
+- Closed shadow roots that a page creates before the script runs are not
+  reached. Parts of a page built that way may not switch.
+- It does not change embedded frames.
+- You may see the other theme for a moment before the page switches.
+- In some cases your manager can't run the script inside the page itself. A
+  site's strict Content Security Policy in Firefox, and pages that are not HTML,
+  are examples. The page's own scripts may then still see your browser's
+  setting, and **Status** says so.
+- It works in Violentmonkey and Tampermonkey. It does not work in Greasemonkey 4
+  or in Safari's Userscripts.
+- Automated tests run in Chromium with Violentmonkey. Firefox and Tampermonkey
+  get a manual check before each first release.
+- On Chrome, your manager needs the **Allow User Scripts** switch. Open
+  `chrome://extensions`, select **Details** on your manager, and turn on **Allow
+  User Scripts**. Without it, no userscript runs.
+
+## Privacy
+
+- Stores one choice per site (light, dark or browser default) in your userscript
+  manager's storage on your device.
+- Makes no network requests. It collects no analytics and shares nothing.
+- The site you are on can see which theme it was told you prefer, as it can with
+  your browser's setting. It can't see your choices for other sites.
+- If your manager syncs or backs up its data, your choices go with it. That is
+  the manager's feature, not this script's.
+
+See [PRIVACY.md](https://github.com/yyyyyyyan/userscripts/blob/main/PRIVACY.md)
+for the same information about every script in this collection.
+
+## Changelog and support
+
+-
+  [Changelog](https://github.com/yyyyyyyan/userscripts/blob/main/scripts/per-site-light-dark-mode/CHANGELOG.md)
+- [Report a bug or ask for a
+  feature](https://github.com/yyyyyyyan/userscripts/issues)

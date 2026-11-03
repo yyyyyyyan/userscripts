@@ -92,6 +92,10 @@ and fill in the script-specific list.
   - [ ] <site>
 ```
 
+For Per-Site Light/Dark Mode, check Firefox with particular care. The script
+pins the color scheme with a constructed style sheet shared across realms, and
+that path is untested there.
+
 While the repository is private, raw files need a sign-in, so a pull request's
 file can't be installed from its address. Install from a local copy instead:
 check out the release branch and paste the script file into a new script in your
