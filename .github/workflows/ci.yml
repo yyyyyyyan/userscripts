@@ -92,7 +92,8 @@ jobs:
             exit 0
           fi
           pattern='^(scripts/|tests/e2e/|tools/fetch-violentmonkey\.mjs$|playwright\.config\.mjs$|package(-lock)?\.json$|\.github/workflows/ci\.yml$)'
-          if git diff --name-only "$BASE...$HEAD" | grep -qE "$pattern"; then
+          files="$(git diff --name-only --no-renames "$BASE...$HEAD")"
+          if grep -qE "$pattern" <<<"$files"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -100,7 +101,7 @@ jobs:
 
   e2e:
     needs: changes
-    if: needs.changes.outputs.e2e == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
