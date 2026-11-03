@@ -94,7 +94,8 @@ reads.
 7. Add a row for the script to the table in [PRIVACY.md](PRIVACY.md) and to the
    table in the root [README.md](README.md).
 8. Add the script to the **Script** dropdown in both issue forms in
-   `.github/ISSUE_TEMPLATE/`.
+   `.github/ISSUE_TEMPLATE/`, and add a `script: <slug>` rule to
+   `.github/labeler.yml`. Create the label on GitHub if it doesn't exist yet.
 9. Add a smoke test in `tests/e2e/<slug>.spec.mjs`.
 10. Add at least one `added` changelog fragment that describes the script, as
     in [Describe your change](#describe-your-change). Its first release turns
