@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>light-dark inline</title>
+    <script>
+      document.documentElement.style.colorScheme = 'light dark';
+    </script>
+    <style>
+      body {
+        background: light-dark(rgb(255, 255, 255), rgb(0, 0, 0));
+        color: light-dark(black, white);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>light-dark inline</h1>
+  </body>
+</html>

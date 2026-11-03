@@ -7,6 +7,7 @@ import { chromium, expect } from '@playwright/test';
 import { ensureViolentmonkey } from '../../tools/fetch-violentmonkey.mjs';
 
 const SHADOW_DECLARATION = "const SHADOW_MODE = 'closed';";
+const MENU_COMMANDS = '.submenu-commands .menu-item';
 
 /**
  * @typedef {import('@playwright/test').BrowserContext} BrowserContext
@@ -121,6 +122,44 @@ async function waitForInjector(worker) {
     );
     expect(ids).toContain('1001');
   }, 'Violentmonkey never registered its injector').toPass({ timeout: 15_000 });
+}
+
+/**
+ * Opens Violentmonkey's popup bound to the given page's tab. The target stays the active
+ * tab and the popup opens in the background, which is what makes the popup list that
+ * tab's menu commands.
+ *
+ * The popup lists the commands registered when it opens and never updates. On a slow
+ * machine it can open before a freshly loaded page has registered its commands, so a popup
+ * that lists none is closed and opened again, for up to 15 seconds.
+ * @param {BrowserContext} context
+ * @param {string} extensionId
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<import('@playwright/test').Page>}
+ */
+export async function openMenu(context, extensionId, page) {
+  await page.bringToFront();
+  const worker = await serviceWorkerOf(context);
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const opened = context.waitForEvent('page', { timeout: 15_000 });
+    await worker.evaluate(
+      (url) => chrome.tabs.create({ url, active: false }),
+      `chrome-extension://${extensionId}/popup/index.html`,
+    );
+    const popup = await opened;
+    await popup.waitForLoadState();
+    const listed = await popup
+      .locator(MENU_COMMANDS)
+      .first()
+      .waitFor({ state: 'attached', timeout: 2_000 })
+      .then(
+        () => true,
+        () => false,
+      );
+    if (listed || Date.now() > deadline) return popup;
+    await popup.close();
+  }
 }
 
 /**

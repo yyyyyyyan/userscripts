@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>late theme check</title>
+    <script>
+      window.analyticsQueue = [];
+    </script>
+    <!-- the test server pauses here -->
+    <script>
+      document.documentElement.dataset.scheme = matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light';
+    </script>
+    <style>
+      body {
+        background: rgb(255, 255, 255);
+      }
+      :root[data-scheme='dark'] body {
+        background: rgb(0, 0, 0);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>late theme check</h1>
+  </body>
+</html>

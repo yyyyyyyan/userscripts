@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "jsPlugins": ["eslint-plugin-userscripts"],
-  "ignorePatterns": ["*.mjs", "tools/**", "tests/**"],
+  "ignorePatterns": ["*.mjs", "tools/**", "tests/**", "types/**"],
   "env": {
     "browser": true,
     "greasemonkey": true,

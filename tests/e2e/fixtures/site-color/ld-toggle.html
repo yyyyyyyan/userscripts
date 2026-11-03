@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>light-dark toggle</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      :root[data-theme='light'] {
+        color-scheme: light;
+      }
+      :root[data-theme='dark'] {
+        color-scheme: dark;
+      }
+      body {
+        background: light-dark(rgb(255, 255, 255), rgb(0, 0, 0));
+        color: light-dark(black, white);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>light-dark toggle</h1>
+    <button id="light" onclick="document.documentElement.dataset.theme = 'light'">Light</button>
+  </body>
+</html>

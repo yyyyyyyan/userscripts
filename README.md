@@ -1,15 +1,18 @@
 # Userscripts
 
 A small collection of userscripts that each do one job on the web pages you
-choose. They are published on [Greasy Fork](https://greasyfork.org/en/users/1660417-yyyyyyyan).
+choose. Each one is published on [Greasy Fork](https://greasyfork.org/en/users/1660417-yyyyyyyan)
+as it is released.
 
 ## Scripts
 
 | Script | What it does | Where it runs | Install |
 |---|---|---|---|
+| [Per-Site Light/Dark Mode](scripts/per-site-light-dark-mode/README.md) | Asks each site for its own light or dark theme, remembered per site. | Every website | Coming soon |
 
-The first scripts are on the way. They will appear in this table with an
-install link for each one.
+Per-Site Light/Dark Mode is the first script. Its install link will replace
+"Coming soon" once it is on Greasy Fork. Later scripts get a row in this table
+too.
 
 ## Get a userscript manager
 

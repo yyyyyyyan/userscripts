@@ -92,6 +92,25 @@ and fill in the script-specific list.
   - [ ] <site>
 ```
 
+For Per-Site Light/Dark Mode, the script-specific list is below. The sites are
+the ones its README names as tested. The release waits until each item is
+checked:
+
+- [ ] Sites, each with **Dark for** selected while the browser is in light:
+  - [ ] react.dev
+  - [ ] developer.mozilla.org
+  - [ ] github.com
+  - [ ] docs.python.org
+  - [ ] w3.org
+  - [ ] wiki.archlinux.org
+- [ ] In Tampermonkey, on at least one of those sites, the theme applies and
+  **Status** reports it.
+- [ ] Form controls and scroll bars follow the choice, in Chromium and in
+  Firefox.
+- [ ] In Firefox, on a site with a strict Content Security Policy, the theme
+  applies or **Status** reports that the script could not run inside the page.
+  This path has no automated test.
+
 While the repository is private, raw files need a sign-in, so a pull request's
 file can't be installed from its address. Install from a local copy instead:
 check out the release branch and paste the script file into a new script in your
@@ -128,7 +147,9 @@ release of that script.
    with the sync type set to **Automatic**.
 4. Set the additional info sync address to
    `https://raw.githubusercontent.com/yyyyyyyan/userscripts/dist/<slug>.md`.
-5. Make a follow-up patch release. If Greasy Fork shows the new version, the
+5. In a normal pull request, replace "Coming soon" in the root `README.md`
+   table with the script's Greasy Fork install link.
+6. Make a follow-up patch release. If Greasy Fork shows the new version, the
    webhook works.
 
 ## Recover from a failed publish run
