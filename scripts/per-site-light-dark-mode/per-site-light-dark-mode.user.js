@@ -197,11 +197,7 @@
     }
 
     const pin = pinState();
-    if (pin === 'site') {
-      lines.push(
-        `The site has set its own ${siteScheme} color scheme, for example from its own theme switch, and the script leaves that alone.`,
-      );
-    } else if (pin === 'dropped') {
+    if (pin === 'dropped') {
       lines.push(
         "The page later removed the color scheme the script set, so this page may show your browser's setting until you reload it.",
       );
@@ -214,6 +210,11 @@
       const count = blockedSheets.size;
       lines.push(
         `${count} style ${count === 1 ? 'sheet' : 'sheets'} from other sites could not be read, so parts of this page may not switch.`,
+      );
+    }
+    if (pin === 'site') {
+      lines.push(
+        `The site has set its own ${siteScheme} color scheme, for example from its own theme switch, and the script leaves that alone.`,
       );
     }
     return lines.slice(0, 4);
