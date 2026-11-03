@@ -918,6 +918,27 @@ test('an unrelated script that ran first does not hide that the page asked later
   });
 });
 
+test('status keeps an unreadable style sheet in view when the page asked late', async () => {
+  const html = await fixture('late-check.html');
+  const routes = {
+    /** @param {Request} req @param {Response} res */
+    '/': (req, res) => {
+      const port = String(req.headers.host).split(':')[1];
+      const sheet = `<link rel="stylesheet" href="http://other.test:${port}/remote.css" />`;
+      pausedAfterMark(html.replace('<title>', `${sheet}<title>`))(req, res);
+    },
+    '/remote.css': stylesheet(':root { --remote: 1; }'),
+  };
+  await withSites({ routes, hosts: ['other.test'] }, async ({ vm, open }) => {
+    const page = await open('light');
+    await choose(vm.context, vm.extensionId, page, 'Dark for');
+    const status = await readStatus(vm, page);
+    expect(status).toContain('This page asked which theme you prefer and was told dark.');
+    expect(status).toContain('could not be read');
+    expect(status).not.toContain('have no dark rules');
+  });
+});
+
 test('a script still waiting to download does not count as having run', async () => {
   const theme = await fixture('theme.js');
   /** @param {Request} _req @param {Response} res */

@@ -211,9 +211,11 @@
           `If it still shows your browser's setting, it probably checked its theme before the script loaded. ${EARLY_INJECTION}`,
         );
       }
-      lines.push(
-        `Its style sheets have no ${mode} rules the script could switch, so whether it changes is up to its own scripts.`,
-      );
+      if (blockedSheets.size === 0) {
+        lines.push(
+          `Its style sheets have no ${mode} rules the script could switch, so whether it changes is up to its own scripts.`,
+        );
+      }
     } else if (injectedAt.scripts > 0) {
       lines.push(
         "This page may have checked its theme before the script could run, so it may still show your browser's setting.",
@@ -246,7 +248,7 @@
         `The site has set its own ${siteScheme} color scheme, for example from its own theme switch, and the script leaves that alone.`,
       );
     }
-    return lines.slice(0, 4);
+    return lines;
   }
 
   GM_registerMenuCommand('Status', () => {
