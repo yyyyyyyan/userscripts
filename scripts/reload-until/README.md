@@ -105,7 +105,7 @@ the alarm first.
 
 ## Settings
 
-![The Reload Until settings panel with three groups. What to watch has the page address, the element .availability and the text Tickets available, set to raise the alarm when the element appears. When has Watch this page turned on, with 30 seconds between reloads. How to alert has the alert style set to one desktop notification, and an Allow desktop notifications button.](images/settings.png)
+![The Reload Until settings panel with three groups. What to watch has the page address, the element .availability and the text Tickets available, set to raise the alarm when the element appears. When has Watch this page turned on, with 30 seconds between reloads. How to alert has the alert style set to one desktop notification, and an Allow desktop notifications button. The Delete watch button is dimmed, because the watch isn't saved yet.](images/settings.png)
 
 The settings panel lists only the watches for the site you are on, under
 **Saved watches**. While it is open, the tab doesn't reload. It warns you before
