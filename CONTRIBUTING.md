@@ -56,11 +56,23 @@ Every user-visible change needs a changelog fragment. Create one with:
 node tools/changelog-add.mjs <slug> <section> <short-name> "<sentence>"
 ```
 
-The section is one of `breaking`, `added`, `changed`, `deprecated`, `removed`,
-`fixed` or `security`. The sentence says what changes for the user, in one
-line that ends with a period. Changes with no visible effect, such as
-reformatting, don't need a fragment; ask for the `no-changelog` label on the
-pull request.
+The command writes `scripts/<slug>/changelog.d/<short-name>.<section>.md`.
+Follow these rules:
+
+- The section is one of `breaking`, `added`, `changed`, `deprecated`,
+  `removed`, `fixed` or `security`.
+- The short name is lowercase words joined by hyphens, such as `csp-styling`.
+- The sentence says what changes for the user, not how the code changed.
+- The file holds one line, with no leading `- `. The sentence ends in `.`, `!`
+  or `?`.
+
+The section decides the next version. A `breaking` fragment makes a major
+release. `added`, `changed`, `deprecated` and `removed` make a minor release.
+`fixed` and `security` make a patch release. A script's first release is always
+1.0.0.
+
+Changes with no visible effect, such as reformatting, don't need a fragment;
+ask for the `no-changelog` label on the pull request.
 
 Don't edit `@version` by hand. Releases set it.
 
