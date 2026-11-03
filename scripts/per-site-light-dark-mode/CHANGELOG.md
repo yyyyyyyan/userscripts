@@ -2,6 +2,13 @@
 
 All notable changes to Per-Site Light/Dark Mode are documented here. The format is based on Keep a Changelog, and versions follow Semantic Versioning.
 
+## [1.0.1] - 2026-11-03
+
+### Fixed
+
+- On sites that pick their theme the moment they start loading, such as react.dev, Status now names the userscript manager setting that makes the script run first.
+- Status no longer says your choice applied when a page only asked for your theme and nothing on it could switch.
+
 ## [1.0.0] - 2026-11-03
 
 ### Added
