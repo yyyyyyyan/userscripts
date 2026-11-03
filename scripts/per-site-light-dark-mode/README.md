@@ -15,15 +15,16 @@ docs.python.org, w3.org and wiki.archlinux.org.
 
 1. Open a site that has both a light and a dark theme.
 2. Open your userscript manager's menu for the page.
-3. Under Per-Site Light/Dark Mode, choose **Dark for <site> (reloads the tab)**.
-   To get the light theme instead, choose **Light for <site> (reloads the
-   tab)**.
+3. Under Per-Site Light/Dark Mode, choose the **Dark for** entry. It ends with
+   the site's name and "(reloads the tab)", for example **Dark for
+   docs.python.org (reloads the tab)**. For the light theme, choose the **Light
+   for** entry instead.
 4. Wait for the tab to reload. The site now shows the theme you chose.
 5. If nothing changed, open the menu again and choose **Status**. It tells you
    in plain words whether your choice applied and what to try next.
 
-To undo a choice, choose **Browser default for <site> (reloads the tab)**. The
-site then follows your browser again.
+To undo a choice, choose the **Browser default for** entry. The site then
+follows your browser again.
 
 If the site has its own theme button, set it to System or Automatic. A theme you
 pick with the site's own button wins over this script.
