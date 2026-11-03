@@ -3,7 +3,7 @@ import conventional from '@commitlint/config-conventional';
 const [level, applicable, types] = conventional.rules['type-enum'];
 
 /** Dependabot capitalizes "Bump" in group pull request titles, whatever the repository's style. */
-const DEPENDABOT_GROUP = /^\w+\(deps(-dev)?\): Bump the "[\w-]+" group /;
+const DEPENDABOT_GROUP = /^build\(deps(-dev)?\): Bump the "[\w-]+" group /;
 
 export default {
   extends: ['@commitlint/config-conventional'],
