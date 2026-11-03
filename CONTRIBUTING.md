@@ -69,11 +69,13 @@ reads.
    - `@supportURL https://github.com/yyyyyyyan/userscripts/issues`
 3. Add `@match`, `@grant`, `@run-at` and `@noframes` as the script needs them.
    Keep `@grant` and `@match` minimal.
-4. End the block with these two lines:
+4. End the block with the `@compatible` lines below, plus `@incompatible`
+   lines where a browser or manager can't run the script. Align the values the
+   way the `oxlint` rule `userscripts/align-attributes` requires.
 
-   ```javascript
-   // @compatible   chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
-   // @compatible   firefox Violentmonkey or Tampermonkey
+   ```text
+   @compatible chrome Violentmonkey or Tampermonkey; enable "Allow User Scripts"
+   @compatible firefox Violentmonkey or Tampermonkey
    ```
 
 5. Never write `@downloadURL` or `@updateURL`.
