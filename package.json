@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/tools/",
+    "pree2e": "node tools/fetch-violentmonkey.mjs",
     "e2e": "playwright test",
     "typecheck": "tsc -p jsconfig.json",
     "lint": "oxlint",

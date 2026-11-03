@@ -71,3 +71,23 @@ To prepare a release:
 5. Run the manual checklist in the pull request.
 
 6. Squash-merge the pull request.
+
+## Manual release checklist
+
+Automated tests don't cover real sites or Tampermonkey, so every release pull
+request carries this checklist. Paste it into the pull request description and
+fill in the script-specific list.
+
+```markdown
+## Manual checks
+
+- [ ] Installed the script from the pull request's raw file in Tampermonkey on
+      Chromium.
+- [ ] Installed the same file in Violentmonkey on Firefox.
+- [ ] Ran the steps under **How to use** in the script's README in both.
+- [ ] Checked each real site on the script's list:
+  - [ ] <site>
+```
+
+When every box is checked, reply "checked" in the pull request. Squash-merge
+only after that reply.
