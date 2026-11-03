@@ -117,8 +117,11 @@ The automated tests run Reload Until in Violentmonkey on Chromium only. Add
 these lines to its checklist:
 
 ```markdown
-- [ ] Firefox: an alarm with the default alert style shows one desktop
-      notification, and **Acknowledge** closes it.
+- [ ] Firefox and Chromium, after **Allow desktop notifications** in the
+      settings panel: an alarm's desktop notification stays on screen until
+      you click it, and **Acknowledge** closes it.
+- [ ] Firefox and Chromium, on a site where notifications aren't allowed: the
+      alarm still shows a desktop notification (from the userscript manager).
 - [ ] Firefox: an alarm with the insistent alert style repeats its desktop
       notification about once a minute, and **Acknowledge** stops it.
 - [ ] Firefox: on a site with a strict Content Security Policy, such as

@@ -425,12 +425,18 @@ test('same-origin redirect raises the alarm with the full watched URL', async ()
     await expect(page).toHaveTitle(ALARM);
     await expect(widget(page).getByRole('alert')).toContainText(watched);
     await expectRedirectStored(vm, watched, `${site.origin}/login`);
+    await expect
+      .poll(() => desktopNotifications(vm), { message: 'the alarm reaches the desktop' })
+      .toHaveLength(1);
 
+    const sent = await countNotificationsSent(vm);
     const reopened = page.waitForRequest(watched);
     await widget(page).getByRole('button', { name: 'Open watched page' }).click();
     await reopened;
     await page.waitForURL(`${site.origin}/login`);
     await expect(page).toHaveTitle(ALARM);
+    await expect.poll(sent, { message: 'the new landing page sends it once' }).toBe(1);
+    await expect.poll(() => desktopNotifications(vm)).toHaveLength(1);
   });
 });
 
@@ -707,7 +713,7 @@ test('Acknowledge closes the desktop notification', async () => {
   });
 });
 
-test('a re-shown alarm sends no second notification', async () => {
+test('closing Settings keeps the alarm quiet, and a reload sends it to the desktop once', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
     await page.goto(`${site.origin}/appear`);
@@ -720,11 +726,16 @@ test('a re-shown alarm sends no second notification', async () => {
     await panel.getByRole('button', { name: 'Close' }).click();
     await expect(panel).toBeHidden();
     await expect(widget(page).getByRole('alert')).toBeVisible();
+    await page.waitForTimeout(2000);
+    expect(await sent(), 'notifications sent after closing Settings').toBe(0);
+
     await page.reload();
     await expect(page).toHaveTitle(ALARM);
     await expect(widget(page).getByRole('alert')).toBeVisible();
+    await expect.poll(sent).toBe(1);
     await page.waitForTimeout(2000);
-    expect(await sent()).toBe(0);
+    expect(await sent(), 'notifications sent by the reloaded page').toBe(1);
+    expect(await desktopNotifications(vm)).toHaveLength(1);
   });
 });
 
@@ -742,7 +753,7 @@ test('page alert style sends no desktop notification', async () => {
 });
 
 test('insistent alert style repeats the desktop notification until Acknowledge', async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
     await page.goto(`${site.origin}/appear`);
@@ -759,5 +770,67 @@ test('insistent alert style repeats the desktop notification until Acknowledge',
     expect(await desktopNotifications(vm)).toHaveLength(1);
     await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
     await expect.poll(() => desktopNotifications(vm)).toEqual([]);
+
+    // Reminders are due every 60 s from the alarm, so this wait passes the next one.
+    await page.waitForTimeout(62_000);
+    expect(await sent(), 'notifications sent after Acknowledge').toBe(2);
+    expect(await desktopNotifications(vm)).toEqual([]);
+  });
+});
+
+test('with permission, the alarm uses a site notification that asks to stay until clicked', async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    // Stands in for the browser's notifications, which the script uses from the page's world.
+    await page.addInitScript(() => {
+      /** @type {{ created: { title: string, options: NotificationOptions }[], closed: number }} */
+      const record = { created: [], closed: 0 };
+      class FakeNotification extends EventTarget {
+        static get permission() {
+          return sessionStorage.getItem('test-notification-permission') ?? 'default';
+        }
+        static requestPermission() {
+          sessionStorage.setItem('test-notification-permission', 'granted');
+          return Promise.resolve(FakeNotification.permission);
+        }
+        /**
+         * @param {string} title
+         * @param {NotificationOptions} options
+         */
+        constructor(title, options) {
+          super();
+          record.created.push({ title, options });
+        }
+        close() {
+          record.closed += 1;
+        }
+      }
+      Object.assign(window, { Notification: FakeNotification, notificationRecord: record });
+    });
+    await page.goto(`${site.origin}/appear`);
+    const sent = await countNotificationsSent(vm);
+
+    const panel = await openPanel(vm, page);
+    const allow = panel.getByRole('button', { name: 'Allow desktop notifications' });
+    await expect(allow).toHaveAccessibleDescription(/not asked yet/);
+    await allow.click();
+    await expect(allow).toHaveAccessibleDescription(/allowed/);
+    await expect(allow).toBeDisabled();
+    await fillWatch(panel, { condition: 'Appears', selector: '#target' });
+    await panel.getByRole('button', { name: 'Save watch' }).click();
+    await expect(panel).toBeHidden();
+
+    await expect(page).toHaveTitle(ALARM, { timeout: 30_000 });
+    const record = () => page.evaluate(() => window.notificationRecord);
+    await expect.poll(async () => (await record()).created.length).toBe(1);
+    const [notification] = (await record()).created;
+    expect(notification.title).toBe('Reload Until: the page changed');
+    expect(notification.options).toMatchObject({ requireInteraction: true });
+    expect(notification.options.tag).toMatch(/^reload-until-alarm-\d+$/);
+    expect(notification.options.body).not.toMatch(/critical/i);
+    expect(await sent(), 'manager notifications').toBe(0);
+
+    await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
+    await expect.poll(async () => (await record()).closed).toBe(1);
   });
 });

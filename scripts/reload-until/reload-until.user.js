@@ -340,7 +340,6 @@
         enabled: false,
         pendingAlert: { kind: 'redirect', at, landedUrl, watchOrigin, watchHost },
       });
-      raisedHere = at;
     }
     awayAlarmUrl = watchUrl;
   }
@@ -653,82 +652,195 @@
 
   /** @type {AudioContext | null} */
   let audio = null;
+  const SOUND_BLOCKED = 'Sound may be blocked: allow audio autoplay for this site.';
+  const SOUND_RESUME_WAIT_MS = 1000;
 
-  /** @returns {string} What the widget should say about the sound; empty when it played. */
-  function beep() {
-    try {
-      const AudioContext = /** @type {typeof window.AudioContext} */ (
-        window.AudioContext || /** @type {LegacyAudioWindow} */ (window).webkitAudioContext
-      );
-      audio ??= new AudioContext();
-      if (audio.state !== 'running') {
-        audio.resume().catch(() => {});
-        return 'Sound may be blocked: allow audio autoplay for this site.';
-      }
-      for (let repeat = 0; repeat < 3; repeat++) {
-        const oscillator = audio.createOscillator();
-        const gain = audio.createGain();
-        oscillator.connect(gain);
-        gain.connect(audio.destination);
-        const start = audio.currentTime + repeat * 0.6;
-        oscillator.frequency.setValueAtTime(880, start);
-        oscillator.frequency.setValueAtTime(660, start + 0.2);
-        gain.gain.setValueAtTime(0, start);
-        gain.gain.linearRampToValueAtTime(SOUND_VOLUME, start + 0.02);
-        gain.gain.setValueAtTime(SOUND_VOLUME, start + 0.4);
-        gain.gain.linearRampToValueAtTime(0, start + 0.5);
-        oscillator.addEventListener('ended', () => {
-          oscillator.disconnect();
-          gain.disconnect();
-        });
-        oscillator.start(start);
-        oscillator.stop(start + 0.5);
-      }
-      return '';
-    } catch (error) {
-      return 'Sound unavailable: ' + /** @type {Error} */ (error).message;
+  /** @param {AudioContext} context */
+  function playAlarmSound(context) {
+    for (let repeat = 0; repeat < 3; repeat++) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      const start = context.currentTime + repeat * 0.6;
+      oscillator.frequency.setValueAtTime(880, start);
+      oscillator.frequency.setValueAtTime(660, start + 0.2);
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(SOUND_VOLUME, start + 0.02);
+      gain.gain.setValueAtTime(SOUND_VOLUME, start + 0.4);
+      gain.gain.linearRampToValueAtTime(0, start + 0.5);
+      oscillator.addEventListener('ended', () => {
+        oscillator.disconnect();
+        gain.disconnect();
+      });
+      oscillator.start(start);
+      oscillator.stop(start + 0.5);
     }
   }
 
   /**
-   * Shows a desktop notification through the userscript manager. Clicking it brings this tab to
-   * the front.
-   * @param {string} title
-   * @param {string} text
-   * @returns {{ handle: VMScriptGMNotificationControl | undefined, problem: string }} The handle
-   *   is missing where the manager doesn't return one.
+   * Plays the alarm sound once. A new audio context can start out suspended even where sound is
+   * allowed, so it is resumed first; the sound counts as blocked only if resuming fails or
+   * doesn't finish promptly, and a late resume plays nothing, so the sound never comes at a
+   * surprising moment.
+   * @returns {Promise<string>} What the widget should say about the sound; empty when it played.
    */
-  function notifyDesktop(title, text) {
-    try {
-      const handle = /** @type {VMScriptGMNotificationControl | undefined} */ (
-        GM_notification({ title, text, onclick: () => window.focus() })
-      );
-      return { handle, problem: '' };
-    } catch (error) {
-      return {
-        handle: undefined,
-        problem:
-          'The desktop notification failed: ' +
-          /** @type {Error} */ (error).message +
-          '. The alarm stays on this page.',
-      };
-    }
+  function beep() {
+    return new Promise((resolve) => {
+      try {
+        const AudioContext = /** @type {typeof window.AudioContext} */ (
+          window.AudioContext || /** @type {LegacyAudioWindow} */ (window).webkitAudioContext
+        );
+        const context = (audio ??= new AudioContext());
+        if (context.state === 'running') {
+          playAlarmSound(context);
+          resolve('');
+          return;
+        }
+        let settled = false;
+        const timer = setTimeout(() => {
+          settled = true;
+          resolve(SOUND_BLOCKED);
+        }, SOUND_RESUME_WAIT_MS);
+        /** @param {boolean} resumed */
+        const finish = (resumed) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (resumed && context.state === 'running') {
+            playAlarmSound(context);
+            resolve('');
+          } else resolve(SOUND_BLOCKED);
+        };
+        context.resume().then(
+          () => finish(true),
+          () => finish(false),
+        );
+      } catch (error) {
+        resolve('Sound unavailable: ' + /** @type {Error} */ (error).message);
+      }
+    });
   }
 
-  /** @param {VMScriptGMNotificationControl | undefined} handle */
-  function removeNotification(handle) {
-    try {
-      handle?.remove().catch(() => {});
-    } catch {
-      /* A notification the user already closed needs no cleanup. */
-    }
-  }
+  /**
+   * A desktop notification the script can close.
+   * @typedef {object} DesktopNotice
+   * @property {() => void} close
+   */
 
   /**
    * @typedef {object} AlarmMessage
    * @property {string} title
    * @property {string} text
+   * @property {string} tag Names the alarm without its URL, so a later page's notification
+   *   replaces one that is still on screen.
    */
+
+  /**
+   * The browser's own notifications for this site. Uses the page's standard `Notification`, not
+   * `unsafeWindow`, so Firefox can pass arguments across its userscript sandbox.
+   * @returns {typeof Notification | null} Null where the page can't show them at all.
+   */
+  function notificationApi() {
+    try {
+      return window.isSecureContext && typeof window.Notification === 'function'
+        ? window.Notification
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @returns {typeof Notification | null} This site's notifications, if the user allowed them. */
+  function siteNotifications() {
+    const Native = notificationApi();
+    try {
+      return Native?.permission === 'granted' ? Native : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function focusTab() {
+    window.focus();
+  }
+
+  /**
+   * @param {AlarmMessage} message
+   * @param {(problem: string) => void} onProblem
+   * @returns {DesktopNotice}
+   */
+  function notifyThroughManager({ title, text }, onProblem) {
+    try {
+      const handle = /** @type {VMScriptGMNotificationControl | undefined} */ (
+        GM_notification({ title, text, onclick: focusTab })
+      );
+      return {
+        close() {
+          try {
+            handle?.remove().catch(() => {});
+          } catch {
+            /* A notification the user already closed needs no cleanup. */
+          }
+        },
+      };
+    } catch (error) {
+      onProblem(
+        'The desktop notification failed: ' +
+          /** @type {Error} */ (error).message +
+          '. The alarm stays on this page.',
+      );
+      return { close() {} };
+    }
+  }
+
+  /**
+   * Shows a desktop notification. Where the user allowed this site's notifications, it uses
+   * them and asks the browser to keep them on screen until clicked; otherwise, or if they fail,
+   * it uses the userscript manager's. Clicking it brings this tab to the front.
+   * @param {AlarmMessage} message
+   * @param {{ renotify: boolean, onProblem: (problem: string) => void }} options
+   * @returns {DesktopNotice}
+   */
+  function notifyDesktop(message, { renotify, onProblem }) {
+    const Native = siteNotifications();
+    if (!Native) return notifyThroughManager(message, onProblem);
+    /** @type {NotificationOptions & { renotify?: boolean }} */
+    const options = { body: message.text, tag: message.tag, requireInteraction: true };
+    if (renotify) options.renotify = true;
+    /** @type {Notification} */
+    let notification;
+    try {
+      notification = new Native(message.title, options);
+    } catch {
+      return notifyThroughManager(message, onProblem);
+    }
+    /** @type {DesktopNotice | null} */
+    let fallback = null;
+    const useManager = () => {
+      detach();
+      fallback ??= notifyThroughManager(message, onProblem);
+    };
+    // Removed explicitly rather than with an AbortSignal, which Firefox may not accept across
+    // its userscript sandbox.
+    function detach() {
+      notification.removeEventListener('click', focusTab);
+      notification.removeEventListener('error', useManager);
+    }
+    notification.addEventListener('click', focusTab);
+    notification.addEventListener('error', useManager);
+    return {
+      close() {
+        detach();
+        try {
+          notification.close();
+        } catch {
+          /* A notification the user already closed needs no cleanup. */
+        }
+        fallback?.close();
+      },
+    };
+  }
 
   /**
    * The alarm this document is sounding. It lives outside the widget so that rebuilding the
@@ -737,23 +849,25 @@
    * @property {string} url
    * @property {number} at
    * @property {ReturnType<typeof setTimeout> | undefined} reminder
-   * @property {VMScriptGMNotificationControl | undefined} notification
-   * @property {string} problem
+   * @property {DesktopNotice | undefined} notification
+   * @property {string} deliveryProblem
+   * @property {string} soundProblem
    * @property {(problem: string) => void} onProblem
    */
 
   /** @type {ActiveAlarm | null} */
   let activeAlarm = null;
-  /** @type {number | null} The `at` of an alarm this document raised and hasn't announced yet. */
-  let raisedHere = null;
+  /** @type {Set<number>} The alarms, by `at`, that this document has already announced. */
+  const announced = new Set();
 
   /**
-   * Sounds a watch's pending alarm according to its alert style. Only the document that raised
-   * the alarm announces it. A page that shows it again, after a reload, a route change or
-   * closing Settings, stays quiet; insistent reminders keep their one-minute schedule from when
+   * Sounds a watch's pending alarm according to its alert style. Each document that shows the
+   * alarm announces it once, because the userscript manager closes a tab's notifications when a
+   * new page loads in it. Showing it again in the same document, after Settings closes or a
+   * route change, stays quiet. Insistent reminders keep a one-minute schedule counted from when
    * the alarm was raised.
    * @param {Watch} watch
-   * @param {AlarmMessage} message
+   * @param {Omit<AlarmMessage, 'tag'>} message
    * @param {(problem: string) => void} onProblem Receives what the widget should say about sound
    *   or desktop delivery.
    */
@@ -762,7 +876,7 @@
     if (!alert) return;
     if (activeAlarm?.url === watch.url && activeAlarm.at === alert.at) {
       activeAlarm.onProblem = onProblem;
-      onProblem(activeAlarm.problem);
+      reportAlarmProblems(activeAlarm);
       return;
     }
     silenceAlarm();
@@ -772,25 +886,34 @@
       at: alert.at,
       reminder: undefined,
       notification: undefined,
-      problem: '',
+      deliveryProblem: '',
+      soundProblem: '',
       onProblem,
     };
     activeAlarm = alarm;
     const insistent = watch.alertStyle === 'insistent';
+    const tagged = { ...message, tag: 'reload-until-alarm-' + alert.at };
     function ring() {
-      const problems = [];
       if (watch.alertStyle !== 'page') {
-        removeNotification(alarm.notification);
-        const sent = notifyDesktop(message.title, message.text);
-        alarm.notification = sent.handle;
-        problems.push(sent.problem);
+        alarm.notification?.close();
+        alarm.deliveryProblem = '';
+        alarm.notification = notifyDesktop(tagged, {
+          renotify: insistent,
+          onProblem(problem) {
+            alarm.deliveryProblem = problem;
+            reportAlarmProblems(alarm);
+          },
+        });
       }
-      if (insistent) problems.push(beep());
-      alarm.problem = problems.filter(Boolean).join(' ');
-      alarm.onProblem(alarm.problem);
+      reportAlarmProblems(alarm);
+      if (insistent)
+        beep().then((problem) => {
+          alarm.soundProblem = problem;
+          reportAlarmProblems(alarm);
+        });
     }
-    if (raisedHere === alert.at) {
-      raisedHere = null;
+    if (!announced.has(alert.at)) {
+      announced.add(alert.at);
       ring();
     }
     if (!insistent) return;
@@ -798,6 +921,7 @@
       const sinceRaised = Math.max(0, Date.now() - alert.at);
       alarm.reminder = setTimeout(
         () => {
+          if (activeAlarm !== alarm) return;
           ring();
           remindLater();
         },
@@ -807,10 +931,16 @@
     remindLater();
   }
 
+  /** @param {ActiveAlarm} alarm */
+  function reportAlarmProblems(alarm) {
+    if (activeAlarm !== alarm) return;
+    alarm.onProblem([alarm.deliveryProblem, alarm.soundProblem].filter(Boolean).join(' '));
+  }
+
   function silenceAlarm() {
     if (!activeAlarm) return;
     clearTimeout(activeAlarm.reminder);
-    removeNotification(activeAlarm.notification);
+    activeAlarm.notification?.close();
     activeAlarm = null;
   }
 
@@ -1058,7 +1188,7 @@
       'alertStyle',
       'Alert style',
       'text',
-      'Every alarm stays on the page and in the tab title until you click Acknowledge. Desktop notifications come from your userscript manager. Whether they stay on screen, how urgent they look, and whether Do Not Disturb hides them depend on your browser and desktop. Browsers may block the sound until you have clicked on the page.',
+      'Every alarm stays on the page and in the tab title until you click Acknowledge. Whether desktop notifications stay on screen, how urgent they look, and whether Do Not Disturb hides them depend on your browser and desktop. Insistent reminders and the sound need this tab to stay open, and browsers may block the sound until you have clicked on the page.',
       form,
       [
         ['page', 'On this page only'],
@@ -1066,6 +1196,41 @@
         ['insistent', 'On this page, plus a desktop notification and a sound every minute'],
       ],
     );
+    const permission = add('div', undefined, form);
+    permission.className = 'field';
+    const permissionStatus = add('small', '', permission);
+    permissionStatus.id = 'reload-until-permission-status';
+    permissionStatus.setAttribute('aria-live', 'polite');
+    const permissionButton = add('button', 'Allow desktop notifications', permission);
+    permissionButton.type = 'button';
+    permissionButton.setAttribute('aria-describedby', permissionStatus.id);
+    function showPermission() {
+      const Native = notificationApi();
+      const state = Native ? Native.permission : 'unavailable';
+      permissionStatus.textContent =
+        state === 'granted'
+          ? 'Desktop notifications from this site: allowed. Alarms ask the browser to keep them on screen until you click them.'
+          : state === 'denied'
+            ? 'Desktop notifications from this site: blocked. To allow them, change this site’s notification setting in your browser. Until then, alarms use your userscript manager’s notifications, which some browsers hide after a few seconds.'
+            : state === 'default'
+              ? 'Desktop notifications from this site: not asked yet. Until you allow them, alarms use your userscript manager’s notifications, which some browsers hide after a few seconds.'
+              : 'This site can’t show its own desktop notifications, so alarms use your userscript manager’s notifications.';
+      permissionButton.disabled = state !== 'default';
+    }
+    onUserEvent(permissionButton, 'click', () => {
+      const Native = notificationApi();
+      if (Native?.permission !== 'default') {
+        showPermission();
+        return;
+      }
+      permissionButton.disabled = true;
+      try {
+        Promise.resolve(Native.requestPermission()).then(showPermission, showPermission);
+      } catch {
+        showPermission();
+      }
+    });
+    showPermission();
     const advanced = add('details', undefined, form);
     add('summary', 'Timing and safeguards', advanced);
     field('matchCase', 'Match case', 'checkbox', '', advanced);
@@ -1229,7 +1394,7 @@
     const watchedSite = !away || watch.pendingAlert?.watchOrigin === location.origin;
     /** @type {'alarm' | 'test' | null} */
     let showing = null;
-    /** @type {VMScriptGMNotificationControl | undefined} */
+    /** @type {DesktopNotice | undefined} */
     let testNotification = undefined;
 
     // Shadow DOM keeps our notification text out of the watched page text.
@@ -1318,7 +1483,6 @@
       onTriggered(persisted) {
         toggle.textContent = 'Enable';
         status.textContent = 'Stopped: condition met. Enable to watch again.';
-        raisedHere = watch.pendingAlert?.at ?? null;
         showAlarm();
         if (!persisted)
           notice.textContent += '\nThe alarm could not be saved; avoid reloading this page.';
@@ -1360,7 +1524,7 @@
       );
     }
 
-    /** @returns {AlarmMessage} What a desktop notification for this alarm says. */
+    /** @returns {Omit<AlarmMessage, 'tag'>} What a desktop notification for this alarm says. */
     function alarmMessage() {
       return {
         title:
@@ -1371,7 +1535,7 @@
           alarmText() +
           ' The alarm stays on the page until you click Acknowledge.' +
           (watch.alertStyle === 'insistent'
-            ? ' This reminder repeats every minute until then.'
+            ? ' While this tab stays open, a reminder follows every minute until then.'
             : ''),
       };
     }
@@ -1403,7 +1567,7 @@
     function showAlarm() {
       const alert = watch.pendingAlert;
       if (!alert) return;
-      removeNotification(testNotification);
+      testNotification?.close();
       testNotification = undefined;
       showing = 'alarm';
       rememberAlarm(watch.url, alert.watchOrigin);
@@ -1422,22 +1586,27 @@
         '⚠ Test alert: this is how an alarm shows on this page. Your watch is unchanged.\nClick Acknowledge to dismiss it.',
       );
       setTitle('⚠ TEST — ' + originalTitle);
-      const problems = [];
-      if (watch.alertStyle !== 'page') {
-        const sent = notifyDesktop(
-          'Reload Until: test alert',
-          'This is how an alarm for this watch reaches your desktop. Your watch is unchanged.',
+      detail.textContent = '';
+      /** @param {string} problem */
+      const report = (problem) => {
+        if (showing === 'test' && problem)
+          detail.textContent = [detail.textContent, problem].filter(Boolean).join(' ');
+      };
+      if (watch.alertStyle !== 'page')
+        testNotification = notifyDesktop(
+          {
+            title: 'Reload Until: test alert',
+            text: 'This is how an alarm for this watch reaches your desktop. Your watch is unchanged.',
+            tag: 'reload-until-test',
+          },
+          { renotify: false, onProblem: report },
         );
-        testNotification = sent.handle;
-        problems.push(sent.problem);
-      }
-      if (watch.alertStyle === 'insistent') problems.push(beep());
-      detail.textContent = problems.filter(Boolean).join(' ');
+      if (watch.alertStyle === 'insistent') beep().then(report);
     }
 
     function acknowledge() {
       if (showing === 'test') {
-        removeNotification(testNotification);
+        testNotification?.close();
         testNotification = undefined;
         clearNotice();
         return;
@@ -1486,7 +1655,7 @@
       },
       destroy() {
         watcher.stop();
-        removeNotification(testNotification);
+        testNotification?.close();
         restoreTitle();
         host.remove();
       },
