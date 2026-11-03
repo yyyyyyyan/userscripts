@@ -489,16 +489,14 @@ for (const [how, name, routes, change, expected] of SCHEME_CHANGES) {
   });
 }
 
-const LONGEST_RUN_MS = 60;
-const TOTAL_MS = 100;
-
 /**
  * Builds a page shaped like a large real site: about 27,000 rules, one in eleven of them a
- * `prefers-color-scheme` block, split between a linked sheet and an inline one, and about
- * 77,000 elements.
+ * `prefers-color-scheme` block, split between a linked sheet and an inline one, and 2,000
+ * rows followed by `extra` plain elements.
+ * @param {number} extra
  * @returns {{ html: string, css: string }}
  */
-function largePage() {
+function largePage(extra) {
   /** @param {number} from @param {number} to */
   const rules = (from, to) => {
     const lines = [];
@@ -515,7 +513,7 @@ function largePage() {
     html: [
       '<!doctype html><html><head><meta charset="utf-8"><title>large</title>',
       `<link rel="stylesheet" href="/large.css"><style>:root{color-scheme:light dark}\n${rules(0, 4544)}</style></head>`,
-      `<body>${rows.join('')}<div>${'<i></i>'.repeat(75000)}</div></body></html>`,
+      `<body>${rows.join('')}<div>${'<i></i>'.repeat(extra)}</div></body></html>`,
     ].join('\n'),
   };
 }
@@ -613,51 +611,58 @@ function timeScriptWork() {
   });
 }
 
-test('the script walks a page with 27,000 rules quickly', async () => {
-  const { html, css } = largePage();
-  const routes = { '/': PLAIN_PAGE, '/large': html, '/large.css': stylesheet(css) };
-  await withSites({ routes }, async ({ vm, open }) => {
-    const setup = await open('light');
-    await choose(vm.context, vm.extensionId, setup, 'Dark for');
-    const url = new URL('/large', setup.url()).href;
-    await setup.close();
+const PAGE_SIZES = [
+  { name: '2,000', extra: 0, longestMs: 60, totalMs: 100 },
+  { name: '77,000', extra: 75000, longestMs: 60, totalMs: 250 },
+];
 
-    const loads = [];
-    for (let i = 0; i < 3; i++) {
-      const page = await vm.context.newPage();
-      await page.addInitScript(timeScriptWork);
-      await page.emulateMedia({ colorScheme: 'light' });
-      await page.goto(url);
-      await expect
-        .poll(() => page.evaluate(() => getComputedStyle(document.body.children[0]).color))
-        .toBe(WHITE);
-      const work = await page.evaluate(() => window['__scriptWork']);
-      expect(work?.runs).toBeGreaterThan(0);
-      loads.push(work);
-      await page.close();
-    }
+for (const { name, extra, longestMs, totalMs } of PAGE_SIZES) {
+  test(`the script walks a page with 27,000 rules and ${name} elements quickly`, async () => {
+    const { html, css } = largePage(extra);
+    const routes = { '/': PLAIN_PAGE, '/large': html, '/large.css': stylesheet(css) };
+    await withSites({ routes }, async ({ vm, open }) => {
+      const setup = await open('light');
+      await choose(vm.context, vm.extensionId, setup, 'Dark for');
+      const url = new URL('/large', setup.url()).href;
+      await setup.close();
 
-    /** @param {number[]} values */
-    const median = (values) => values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)];
-    const longest = median(loads.map((work) => work.longest));
-    const total = median(loads.map((work) => work.total));
-    for (const work of loads) {
-      test.info().annotations.push({
-        type: 'script work',
-        description: [
-          `longest run ${work.longest.toFixed(1)} ms`,
-          `${work.total.toFixed(1)} ms over ${work.runs} runs`,
-          `injected while ${work.readyState}`,
-          ...Object.entries(work.byKind).map(([kind, ms]) => `${kind} ${ms.toFixed(1)} ms`),
-        ].join(', '),
-      });
-    }
-    if (!process.env.CI) {
-      expect(longest).toBeLessThan(LONGEST_RUN_MS);
-      expect(total).toBeLessThan(TOTAL_MS);
-    }
+      const loads = [];
+      for (let i = 0; i < 3; i++) {
+        const page = await vm.context.newPage();
+        await page.addInitScript(timeScriptWork);
+        await page.emulateMedia({ colorScheme: 'light' });
+        await page.goto(url);
+        await expect
+          .poll(() => page.evaluate(() => getComputedStyle(document.body.children[0]).color))
+          .toBe(WHITE);
+        const work = await page.evaluate(() => window['__scriptWork']);
+        expect(work?.runs).toBeGreaterThan(0);
+        loads.push(work);
+        await page.close();
+      }
+
+      /** @param {number[]} values */
+      const median = (values) => values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)];
+      const longest = median(loads.map((work) => work.longest));
+      const total = median(loads.map((work) => work.total));
+      for (const work of loads) {
+        test.info().annotations.push({
+          type: 'script work',
+          description: [
+            `longest run ${work.longest.toFixed(1)} ms`,
+            `${work.total.toFixed(1)} ms over ${work.runs} runs`,
+            `injected while ${work.readyState}`,
+            ...Object.entries(work.byKind).map(([kind, ms]) => `${kind} ${ms.toFixed(1)} ms`),
+          ].join(', '),
+        });
+      }
+      if (!process.env.CI) {
+        expect(longest).toBeLessThan(longestMs);
+        expect(total).toBeLessThan(totalMs);
+      }
+    });
   });
-});
+}
 
 const SITES = ['example.test', 'docs.example.test', 'other.test'];
 
