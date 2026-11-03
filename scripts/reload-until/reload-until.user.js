@@ -29,7 +29,7 @@
 
   /**
    * @typedef {object} PendingAlert
-   * @property {'condition' | 'redirect'} kind
+   * @property {'condition' | 'redirect' | 'not-ready'} kind
    * @property {number} at
    * @property {string} landedUrl
    * @property {string} watchOrigin
@@ -553,7 +553,7 @@
    * @property {boolean} found
    */
 
-  /** @typedef {'user' | 'not-ready' | 'invalid' | 'error' | 'storage'} StopReason */
+  /** @typedef {'user' | 'invalid' | 'error' | 'storage'} StopReason */
 
   /**
    * @typedef {object} WatcherReport
@@ -575,11 +575,28 @@
     let startedAt = 0;
     /** @type {number | null} */
     let candidateSince = null;
+    /** @type {number | null} */
+    let notReadySince = null;
 
     function stop() {
       clearInterval(timer);
       timer = undefined;
       candidateSince = null;
+      notReadySince = null;
+    }
+
+    /**
+     * @param {PendingAlert['kind']} kind
+     * @returns {PendingAlert}
+     */
+    function alertHere(kind) {
+      return {
+        kind,
+        at: Date.now(),
+        landedUrl: watch.url,
+        watchOrigin: location.origin,
+        watchHost: location.hostname,
+      };
     }
 
     /**
@@ -620,9 +637,24 @@
           return;
         }
         if (watch.readySelector && !document.querySelector(watch.readySelector)) {
-          pause('not-ready');
+          candidateSince = null;
+          notReadySince ??= now;
+          const remaining = watch.confirmSeconds * 1000 - (now - notReadySince);
+          report.onProgress({
+            phase: 'confirming',
+            secondsLeft: toSeconds(remaining),
+            found: false,
+          });
+          if (remaining > 0) return;
+          stop();
+          const persisted = persistWatch(watch, {
+            paused: { reason: 'not-ready', detail: '' },
+            pendingAlert: alertHere('not-ready'),
+          });
+          report.onTriggered(persisted);
           return;
         }
+        notReadySince = null;
         const { found, satisfied } = evaluateCondition(watch);
         if (satisfied) {
           candidateSince ??= now;
@@ -632,13 +664,7 @@
           stop();
           const persisted = persistWatch(watch, {
             enabled: false,
-            pendingAlert: {
-              kind: 'condition',
-              at: Date.now(),
-              landedUrl: watch.url,
-              watchOrigin: location.origin,
-              watchHost: location.hostname,
-            },
+            pendingAlert: alertHere('condition'),
           });
           report.onTriggered(persisted);
           return;
@@ -1256,7 +1282,7 @@
       'readySelector',
       'Only check when the page has this element (optional)',
       'text',
-      'A CSS selector, like the one above. If the page doesn’t have this element, the watch pauses instead of raising an alarm, and the box on the page says why and offers Resume.',
+      'A CSS selector, like the one above. If the page doesn’t have this element, the alarm goes off and says the page may not be the real one, and the watch pauses until you select Resume.',
       what,
     );
     const readyHelp = /** @type {string} */ (ready.getAttribute('aria-describedby'));
@@ -1782,8 +1808,13 @@
         showPaused({ reason, detail: problem ?? '' });
       },
       onTriggered(persisted) {
-        toggle.textContent = 'Turn on';
-        status.textContent = 'Stopped: the page changed. Select Turn on to watch again.';
+        if (watch.paused) {
+          toggle.textContent = 'Resume';
+          status.textContent = stoppedStatus();
+        } else {
+          toggle.textContent = 'Turn on';
+          status.textContent = 'Stopped: the page changed. Select Turn on to watch again.';
+        }
         showAlarm();
         if (!persisted)
           notice.textContent += '\nThe alarm couldn’t be saved, so avoid reloading this page.';
@@ -1810,6 +1841,11 @@
     /** What the alarm says. Another site only learns the watched host, never the full URL. */
     function alarmText() {
       const watchHost = watch.pendingAlert?.watchHost || 'another site';
+      if (watch.pendingAlert?.kind === 'not-ready')
+        return (
+          (watchedSite ? 'The page at ' + watch.url : 'A page on ' + watchHost) +
+          ' doesn’t have the element you said is always on it, so it may be an error or sign-in page. The watch is paused.'
+        );
       if (watch.pendingAlert?.kind === 'redirect')
         return watchedSite
           ? 'Reloading ' + watch.url + ' ended on a different page. You may need to sign in again.'
@@ -1828,10 +1864,11 @@
     /** @returns {Omit<AlarmMessage, 'tag'>} What a desktop notification for this alarm says. */
     function alarmMessage() {
       return {
-        title:
-          watch.pendingAlert?.kind === 'redirect'
-            ? 'Reload Until: a reload ended on another page'
-            : 'Reload Until: the page changed',
+        title: {
+          condition: 'Reload Until: the page changed',
+          redirect: 'Reload Until: a reload ended on another page',
+          'not-ready': 'Reload Until: the watched page looks different',
+        }[watch.pendingAlert?.kind ?? 'condition'],
         text:
           alarmText() +
           ' The alarm stays on the page until you select Acknowledge.' +
@@ -1842,9 +1879,11 @@
     }
 
     function stoppedStatus() {
-      return watch.pendingAlert?.kind === 'redirect'
-        ? 'Stopped: a reload ended on a different page.'
-        : 'Stopped: the page changed.';
+      return {
+        condition: 'Stopped: the page changed.',
+        redirect: 'Stopped: a reload ended on a different page.',
+        'not-ready': 'Paused: the page may be an error or sign-in page.',
+      }[watch.pendingAlert?.kind ?? 'condition'];
     }
 
     /** @param {string} text */
@@ -1936,7 +1975,8 @@
           return;
         }
         forgetAlarm(watch.url);
-        status.textContent = stopped + ' Select Turn on to watch again.';
+        if (watch.paused) showPaused(watch.paused);
+        else status.textContent = stopped + ' Select Turn on to watch again.';
       }
       silenceAlarm();
       clearNotice();
@@ -1982,6 +2022,7 @@
     }
 
     if (watch.pendingAlert) {
+      if (watch.paused) toggle.textContent = 'Resume';
       status.textContent = stoppedStatus() + ' An alarm is waiting for you to acknowledge it.';
       showAlarm();
     } else if (watch.paused) showPaused(watch.paused);

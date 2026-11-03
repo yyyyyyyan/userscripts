@@ -1101,10 +1101,11 @@ test('a new watch is on by default', async () => {
   });
 });
 
-test('a watch paused by its page-ready check survives a reload and resumes', async () => {
+test('a missing page-ready element raises an alarm, then the watch stays paused', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
     const watched = `${site.origin}/appear?ready`;
+    const key = `watch:${watched}`;
     // The fixture serves #target only from the second request, so the first load looks unready.
     await page.goto(watched);
     const panel = await openPanel(vm, page);
@@ -1112,14 +1113,37 @@ test('a watch paused by its page-ready check survives a reload and resumes', asy
     await field(panel, LABELS.ready).fill('#target');
     await panel.getByRole('button', { name: 'Save watch' }).click();
     await expect(panel).toBeHidden();
-    await expect(widget(page).getByRole('status')).toHaveText(/Paused/, { timeout: 10_000 });
 
+    await expect(page).toHaveTitle(ALARM, { timeout: 15_000 });
+    await expect(widget(page).getByRole('alert')).toContainText('sign-in page');
+    await expect.poll(() => desktopNotifications(vm)).toHaveLength(1);
+    await expect
+      .poll(async () => {
+        const watch =
+          /** @type {{ pendingAlert?: { kind?: string }, paused?: { reason?: string } }} */ (
+            (await storedValues(vm))[key]
+          );
+        return { kind: watch.pendingAlert?.kind, reason: watch.paused?.reason };
+      })
+      .toEqual({ kind: 'not-ready', reason: 'not-ready' });
+    const requests = site.count('/appear?ready');
+    await page.waitForTimeout(12_000);
+    expect(site.count('/appear?ready'), 'reloads after the alarm').toBe(requests);
+
+    await widget(page).getByRole('button', { name: 'Acknowledge' }).click();
+    await expect(widget(page).getByRole('status')).toHaveText(/Paused.*sign-in page/);
+    await expect(widget(page).getByRole('button', { name: 'Resume' })).toBeVisible();
+    await expect(widget(page).getByRole('button', { name: 'Turn off' })).toBeVisible();
+    await expect(page).toHaveTitle('Appear');
+
+    const sent = await countNotificationsSent(vm);
     await page.reload();
     await expect(page.locator('#target')).toBeVisible();
     await page.waitForTimeout(2000);
-    await expect(widget(page).getByRole('status')).toHaveText(/Paused.*sign-in page/);
-    await expect(widget(page).getByRole('button', { name: 'Turn off' })).toBeVisible();
+    expect(await sent(), 'notifications after the reload').toBe(0);
     await expect(page).toHaveTitle('Appear');
+    await expect(widget(page).getByRole('button', { name: 'Acknowledge' })).toBeHidden();
+    await expect(widget(page).getByRole('status')).toHaveText(/Paused/);
 
     await widget(page).getByRole('button', { name: 'Resume' }).click();
     await expect(page).toHaveTitle(WATCHING);
@@ -1127,11 +1151,12 @@ test('a watch paused by its page-ready check survives a reload and resumes', asy
     await expect(page).toHaveTitle(WATCHING);
     await expect
       .poll(async () => {
-        const watch = /** @type {{ enabled?: boolean, paused?: unknown }} */ (
-          (await storedValues(vm))[`watch:${watched}`]
-        );
-        return { enabled: watch.enabled, paused: watch.paused };
+        const watch =
+          /** @type {{ enabled?: boolean, paused?: unknown, pendingAlert?: unknown }} */ (
+            (await storedValues(vm))[key]
+          );
+        return { enabled: watch.enabled, paused: watch.paused, pendingAlert: watch.pendingAlert };
       })
-      .toEqual({ enabled: true, paused: null });
+      .toEqual({ enabled: true, paused: null, pendingAlert: null });
   });
 });

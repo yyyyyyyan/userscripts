@@ -47,8 +47,9 @@ part of the page instead, you need its CSS selector:
 7. If you selected **Disappears**, enter something that is always on the real
    page, such as its main heading, in
    **Only check when the page has this element (optional)**. Error pages and
-   sign-in pages make things disappear too, and this check stops them from
-   raising a false alarm.
+   sign-in pages make things disappear too. With this check, such a page raises
+   an alarm that says the page may be an error or sign-in page, instead of a
+   false alarm that what you're watching for disappeared.
 8. Select **Save watch**.
 9. Leave the tab open.
 
@@ -75,6 +76,12 @@ to the tab.
 
 The watch is now off. To watch again, select **Turn on** in the box, or turn on
 **Watch this page** in the settings.
+
+If the page doesn't have the element you entered in
+**Only check when the page has this element (optional)**, the alarm says the
+page may be an error or sign-in page, and the watch pauses. Check the page and
+sign in again if you need to. Then select **Acknowledge**, and select
+**Resume**.
 
 If a reload ended on a different page, the box on that page says so and offers
 **Open watched page**. Sign in again if you need to, then select
@@ -118,8 +125,8 @@ it throws away changes you haven't saved, and Escape closes it.
   **Disappears**.
 - **Only check when the page has this element (optional)**: a selector for
   something that is always on the real page. If the page doesn't have it, the
-  watch pauses instead of raising an alarm. The box on the page then says why
-  and offers **Resume**. The panel asks for this when you select
+  alarm goes off and says the page may not be the real one, and the watch
+  pauses until you select **Resume**. The panel asks for this when you select
   **Disappears**.
 
 ### When
@@ -205,12 +212,10 @@ It asks your userscript manager for these permissions:
 - How a desktop notification shows depends on your browser and desktop: whether
   it stays on screen, how urgent it looks, and whether Do Not Disturb hides it.
 - The redirect alarm only notices a reload that the site's server sends to a
-  different address. It misses a sign-in form that appears at the same address,
-  and a page that moves on by itself through its own script, as some single
-  sign-on pages do.
-- When **Only check when the page has this element** pauses a watch, only the
-  box on the page says so. There is no desktop notification, sound or alarm in
-  the tab title, and the page stops reloading until you select **Resume**.
+  different address. It misses a page that moves on by itself through its own
+  script, as some single sign-on pages do. A sign-in form that appears at the
+  same address is caught by **Only check when the page has this element**, if
+  you fill it in.
 - On another site's page where a reload ended, the alarm stays in the tab only
   while that page is open. If the page moves on by itself, the alarm leaves the
   tab, but it keeps waiting on the watched page.
