@@ -52,8 +52,10 @@ subdomain a different theme, open that subdomain and select again. A choice
 saved on a subdomain wins over the one from its parent. **Browser default** on a
 subdomain makes it ignore the parent's choice.
 
-A choice always saves on the site you are on, never on its parent. IP addresses
-match only themselves.
+A choice always saves on the site you are on, never on its parent. The one
+exception is a leading `www.`: a choice on `www.example.com` saves on
+`example.com`, so `docs.example.com` uses it too. IP addresses match only
+themselves.
 
 ## Where it runs and what it can access
 

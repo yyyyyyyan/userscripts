@@ -29,7 +29,8 @@
   const PREFIX = 'choice:';
   const LOG = '[Per-Site Light/Dark Mode]';
   const host = location.hostname.toLowerCase().replace(/\.$/, '');
-  const key = `${PREFIX}${host}`;
+  const site = host.startsWith('www.') && host.slice(4).includes('.') ? host.slice(4) : host;
+  const key = `${PREFIX}${site}`;
 
   /**
    * Finds the choice saved for `hostname` itself, else for the nearest parent host. A browser
@@ -122,11 +123,16 @@
     hooks: /** @type {string[]} */ ([]),
   };
 
-  /** @param {'light' | 'dark' | 'default'} next */
+  /**
+   * Saves `next` for `site`. A choice saved on the www host itself would otherwise still win
+   * over the new one, so it is removed too.
+   * @param {'light' | 'dark' | 'default'} next
+   */
   function selectMode(next) {
+    GM_deleteValue(`${PREFIX}${host}`);
     GM_deleteValue(key);
     if (next !== 'default') GM_setValue(key, next);
-    else if (resolveChoice(host, (name) => (name === key ? undefined : GM_getValue(name))))
+    else if (resolveChoice(site, (name) => (name === key ? undefined : GM_getValue(name))))
       GM_setValue(key, 'default');
     location.reload();
   }
@@ -134,9 +140,9 @@
   const labels = { light: 'Light', dark: 'Dark', default: 'Browser default' };
   for (const value of /** @type {const} */ (['light', 'dark', 'default'])) {
     const active = value === mode;
-    const from = active && choice && choice.host !== host ? `from ${choice.host}, ` : '';
+    const from = active && choice && choice.host !== site ? `from ${choice.host}, ` : '';
     GM_registerMenuCommand(
-      `${active ? '✓ ' : ''}${labels[value]} for ${host} (${from}reloads the tab)`,
+      `${active ? '✓ ' : ''}${labels[value]} for ${site} (${from}reloads the tab)`,
       () => selectMode(value),
     );
   }
@@ -147,10 +153,10 @@
       ? 'dark'
       : 'light';
     if (!choice) {
-      const saved =
-        GM_getValue(key) === 'default'
-          ? `Browser default is saved for ${host}`
-          : `No choice is saved for ${host}`;
+      const savedOn = [host, site].find((name) => GM_getValue(`${PREFIX}${name}`) === 'default');
+      const saved = savedOn
+        ? `Browser default is saved for ${savedOn}`
+        : `No choice is saved for ${site}`;
       return [
         `${saved}, so this page follows your browser's setting, which is ${browser}.`,
         "To pick one, select Light or Dark in your userscript manager's menu.",

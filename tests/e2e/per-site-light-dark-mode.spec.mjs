@@ -710,6 +710,28 @@ test('a subdomain choice overrides its parent', async () => {
   );
 });
 
+test('a choice made on a www host is saved for the site without www', async () => {
+  await withSites(
+    {
+      routes: { '/': await fixture('media-rule.html') },
+      hosts: ['www.example.test', 'docs.example.test'],
+    },
+    async ({ vm, open }) => {
+      const www = await open('light', { host: 'www.example.test' });
+      expect(await menuEntries(vm, www)).toContain(`Dark for example.test ${RELOADS}`);
+      await choose(vm.context, vm.extensionId, www, 'Dark for');
+      await expect.poll(() => backgroundOf(www)).toBe(BLACK);
+      expect(await menuEntries(vm, www)).toContain(`✓ Dark for example.test ${RELOADS}`);
+      expect(await readStatus(vm, www)).toContain(
+        'Dark is saved for example.test, which includes www.example.test.',
+      );
+
+      const docs = await open('light', { host: 'docs.example.test' });
+      await expect.poll(() => backgroundOf(docs)).toBe(BLACK);
+    },
+  );
+});
+
 test('menu has four entries and marks the active one', async () => {
   await withSite(PLAIN_PAGE, async ({ vm, open }) => {
     const page = await open('light');
