@@ -1,1 +1,0 @@
-Reload Until reloads a page until something you pick appears or disappears, then keeps an alarm on the page and in the tab title until you acknowledge it; the alarm also goes off when a reload ends on a different page, or on a page without the element you said is always there.
