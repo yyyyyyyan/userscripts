@@ -109,6 +109,42 @@ async function storedValues(vm) {
 }
 
 /**
+ * Starts counting writes to the script's values in Violentmonkey's extension storage, which
+ * keeps each script's values in one `val:<scriptId>` entry. Calling it again restarts the count.
+ * @param {Vm} vm
+ * @returns {Promise<() => Promise<number>>} Reads the number of writes since the call.
+ */
+async function countValueWrites(vm) {
+  const [worker] = vm.context.serviceWorkers();
+  await worker.evaluate(() => {
+    if (globalThis.reloadUntilWrites) {
+      globalThis.reloadUntilWrites.count = 0;
+      return;
+    }
+    const counter = { count: 0 };
+    globalThis.reloadUntilWrites = counter;
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local') {
+        counter.count += Object.keys(changes).filter((key) => key.startsWith('val:')).length;
+      }
+    });
+  });
+  return () => worker.evaluate(() => globalThis.reloadUntilWrites.count);
+}
+
+/**
+ * @param {Record<string, unknown>} stored
+ * @param {string} key
+ * @returns {unknown} The watch's `pendingAlert`, or undefined when the watch isn't stored.
+ */
+function pendingAlertOf(stored, key) {
+  const watch = stored[key];
+  return typeof watch === 'object' && watch !== null && 'pendingAlert' in watch
+    ? watch.pendingAlert
+    : undefined;
+}
+
+/**
  * @param {Page} page
  * @returns {Locator}
  */
@@ -223,7 +259,7 @@ test('fragment change keeps the watch', async () => {
   });
 });
 
-test("two watched tabs don't undo each other", async () => {
+test('reloads in another tab change no stored value and keep an alarm acknowledged', async () => {
   await withScript(async ({ vm, site }) => {
     const pageA = await vm.context.newPage();
     await pageA.goto(`${site.origin}/appear?a`);
@@ -236,19 +272,20 @@ test("two watched tabs don't undo each other", async () => {
 
     await expect(pageA).toHaveTitle(ALARM, { timeout: 30_000 });
     await pageA.bringToFront();
+    const writes = await countValueWrites(vm);
     await widget(pageA).getByRole('button', { name: 'Acknowledge' }).click();
     await expect(pageA).toHaveTitle('Appear');
+    await expect
+      .poll(writes, { message: 'the acknowledgement reaches storage' })
+      .toBeGreaterThan(0);
 
+    await countValueWrites(vm);
     const reloadsB = site.count('/appear?b');
     await expect.poll(() => site.count('/appear?b'), { timeout: 20_000 }).toBeGreaterThan(reloadsB);
     await expect(pageB).toHaveTitle(WATCHING, { timeout: 10_000 });
-    await pageB.waitForTimeout(2000);
-
-    const stored = await storedValues(vm);
-    const watchA = /** @type {{ pendingAlert: unknown }} */ (
-      stored[`watch:${site.origin}/appear?a`]
-    );
-    expect(watchA.pendingAlert).toBeNull();
+    await pageB.waitForTimeout(3000);
+    expect(await writes(), 'storage writes while tab B reloaded').toBe(0);
+    expect(pendingAlertOf(await storedValues(vm), `watch:${site.origin}/appear?a`)).toBeNull();
 
     await pageA.reload();
     await expect(widget(pageA).getByRole('status')).toBeVisible();

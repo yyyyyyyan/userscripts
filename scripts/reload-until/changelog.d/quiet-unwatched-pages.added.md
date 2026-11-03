@@ -1,1 +1,1 @@
-On a page without a watch, the script only checks whether one exists and adds its menu command.
+On pages you don't watch, the script stays idle apart from its menu command.

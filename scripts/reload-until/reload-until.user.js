@@ -619,13 +619,13 @@
         watch.url = normalizeUrl(watch.url.trim()) ?? watch.url;
         watch.selector = watch.selector.trim();
         watch.readySelector = watch.readySelector.trim();
-        watch.pendingAlert = null;
         validateWatch(watch);
         if (watch.url !== editingURL && readWatch(watch.url))
           throw new FieldError(
             'url',
             'A watch already exists for this URL. Select it from Saved watches to edit it.',
           );
+        watch.pendingAlert = readWatch(watch.url)?.pendingAlert ?? null;
         writeWatch(watch);
         if (editingURL && editingURL !== watch.url) deleteWatch(editingURL);
         close();
