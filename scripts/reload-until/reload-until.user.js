@@ -29,24 +29,23 @@
 
   /**
    * @typedef {object} PendingAlert
-   * @property {string} title
-   * @property {string} text
-   * @property {number} createdAt
+   * @property {'condition' | 'redirect'} kind
+   * @property {number} at
+   * @property {string} landedUrl
    */
 
   /**
-   * @typedef {object} Rule
+   * @typedef {object} Watch
    * @property {string} url
    * @property {boolean} enabled
-   * @property {string} lastStatus
-   * @property {number} intervalSeconds
-   * @property {string} stopWhen
+   * @property {'appears' | 'disappears'} condition
    * @property {string} selector
    * @property {string} text
-   * @property {boolean} caseSensitive
+   * @property {boolean} matchCase
+   * @property {string} readySelector
+   * @property {number} intervalSeconds
    * @property {number} settleSeconds
    * @property {number} confirmSeconds
-   * @property {string} readySelector
    * @property {string} notificationTitle
    * @property {string} notificationText
    * @property {boolean} desktopNotification
@@ -55,8 +54,8 @@
    * @property {number} volume
    * @property {boolean} requireExplicitDismissal
    * @property {number} notificationRepeatSeconds
-   * @property {PendingAlert | null} pendingAlert
    * @property {string} notificationBackend
+   * @property {PendingAlert | null} pendingAlert
    */
 
   /** @typedef {Window & { webkitAudioContext?: typeof AudioContext }} LegacyAudioWindow */
@@ -67,19 +66,22 @@
    * @property {() => void} destroy
    */
 
-  const STORAGE = 'reload-until:watches';
-  /** @type {Omit<Rule, 'url'>} */
+  const SHADOW_MODE = 'closed';
+  const SCHEMA_VERSION = 1;
+  const MIN_INTERVAL_SECONDS = 10;
+  const WATCH_PREFIX = 'watch:';
+  const MAX_SECONDS = 86400;
+  /** @type {Omit<Watch, 'url'>} */
   const DEFAULTS = {
     enabled: false,
-    lastStatus: 'paused',
-    intervalSeconds: 30,
-    stopWhen: 'not-found',
+    condition: 'appears',
     selector: '',
     text: '',
-    caseSensitive: false,
+    matchCase: false,
+    readySelector: '',
+    intervalSeconds: 30,
     settleSeconds: 5,
     confirmSeconds: 3,
-    readySelector: '',
     notificationTitle: 'Reload Until — condition met!',
     notificationText: 'The watched condition is met. Check the page now.',
     desktopNotification: true,
@@ -88,18 +90,152 @@
     volume: 0.25,
     requireExplicitDismissal: true,
     notificationRepeatSeconds: 30,
-    pendingAlert: null,
     notificationBackend: 'auto',
+    pendingAlert: null,
   };
-  /** @param {string} value */
-  function normalizeURL(value) {
-    const url = new URL(value);
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS URL.');
-    if (url.username || url.password)
-      throw new Error('URLs with embedded credentials are not supported.');
+
+  /** A validation failure that belongs to one settings field. */
+  class FieldError extends Error {
+    /**
+     * @param {string} field
+     * @param {string} message
+     */
+    constructor(field, message) {
+      super(message);
+      this.field = field;
+    }
+  }
+
+  /**
+   * @param {string} value
+   * @returns {string | null} The URL without its fragment, or null when it can't be watched.
+   */
+  function normalizeUrl(value) {
+    /** @type {URL} */
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password) return null;
     url.hash = '';
     return url.href;
   }
+  const currentUrl = () => normalizeUrl(location.href);
+
+  /**
+   * @param {string} url
+   * @returns {Watch | null}
+   */
+  function readWatch(url) {
+    const stored = /** @type {Watch | null} */ (GM_getValue(WATCH_PREFIX + url, null));
+    return stored && { ...DEFAULTS, ...stored };
+  }
+
+  /** @param {Watch} watch */
+  function writeWatch(watch) {
+    if (/** @type {number} */ (GM_getValue('schema', 0)) !== SCHEMA_VERSION)
+      GM_setValue('schema', SCHEMA_VERSION);
+    GM_setValue(WATCH_PREFIX + watch.url, watch);
+  }
+
+  /**
+   * Applies a change to the freshest stored copy of one watch, so a tab never writes back
+   * fields it read before another tab changed them.
+   * @param {string} url
+   * @param {Partial<Watch>} patch
+   * @returns {boolean} Whether the watch still existed.
+   */
+  function updateWatch(url, patch) {
+    const latest = readWatch(url);
+    if (!latest) return false;
+    writeWatch({ ...latest, ...patch });
+    return true;
+  }
+
+  /** @param {string} url */
+  function deleteWatch(url) {
+    GM_deleteValue(WATCH_PREFIX + url);
+  }
+
+  /** @returns {Watch[]} */
+  function listWatches() {
+    return GM_listValues()
+      .filter((key) => key.startsWith(WATCH_PREFIX))
+      .map((key) => readWatch(key.slice(WATCH_PREFIX.length)))
+      .filter((watch) => watch !== null);
+  }
+
+  /**
+   * @param {Watch} watch
+   * @throws {FieldError}
+   */
+  function validateWatch(watch) {
+    if (normalizeUrl(watch.url) !== watch.url)
+      throw new FieldError(
+        'url',
+        'Enter a web address that starts with http:// or https:// and has no user name or password.',
+      );
+    if (!['appears', 'disappears'].includes(watch.condition))
+      throw new FieldError('condition', 'Choose Appears or Disappears.');
+    if (
+      !Number.isFinite(watch.intervalSeconds) ||
+      watch.intervalSeconds < MIN_INTERVAL_SECONDS ||
+      watch.intervalSeconds > MAX_SECONDS
+    )
+      throw new FieldError(
+        'intervalSeconds',
+        'Use at least ' + MIN_INTERVAL_SECONDS + ' seconds and at most ' + MAX_SECONDS + '.',
+      );
+    for (const key of /** @type {const} */ (['soundRepeatSeconds', 'notificationRepeatSeconds'])) {
+      if (!Number.isFinite(watch[key]) || watch[key] < 1 || watch[key] > MAX_SECONDS)
+        throw new FieldError(key, 'Use a number from 1 to ' + MAX_SECONDS + '.');
+    }
+    for (const key of /** @type {const} */ (['settleSeconds', 'confirmSeconds'])) {
+      if (!Number.isFinite(watch[key]) || watch[key] < 0 || watch[key] > MAX_SECONDS)
+        throw new FieldError(key, 'Use a number from 0 to ' + MAX_SECONDS + '.');
+    }
+    if (!['auto', 'manager'].includes(watch.notificationBackend))
+      throw new FieldError('notificationBackend', 'Choose a notification method.');
+    if (!Number.isFinite(watch.volume) || watch.volume < 0 || watch.volume > 1)
+      throw new FieldError('volume', 'Use a volume from 0 to 1.');
+    if (typeof watch.text !== 'string') throw new FieldError('text', 'Enter text or leave blank.');
+    if (typeof watch.selector !== 'string' || !watch.selector.trim())
+      throw new FieldError('selector', 'Enter a CSS selector.');
+    for (const key of /** @type {const} */ (['selector', 'readySelector'])) {
+      if (!watch[key]) continue;
+      try {
+        document.querySelector(watch[key]);
+      } catch {
+        throw new FieldError(key, 'This CSS selector is not valid.');
+      }
+    }
+  }
+
+  /**
+   * @param {string} text
+   * @param {boolean} matchCase
+   */
+  function normalizeText(text, matchCase) {
+    const result = text.replace(/\s+/g, ' ').trim();
+    return matchCase ? result : result.toLowerCase();
+  }
+
+  /**
+   * @param {Watch} watch
+   * @returns {{ found: boolean, satisfied: boolean }}
+   */
+  function evaluateCondition(watch) {
+    const needle = normalizeText(watch.text, watch.matchCase);
+    const found = Array.from(document.querySelectorAll(watch.selector)).some(
+      (element) =>
+        !needle || normalizeText(element.textContent || '', watch.matchCase).includes(needle),
+    );
+    return { found, satisfied: watch.condition === 'appears' ? found : !found };
+  }
+
   // Use the standard DOM API, not unsafeWindow, so Firefox can wrap arguments
   // normally across its userscript sandbox.
   function nativeAPI() {
@@ -118,70 +254,62 @@
       return 'unavailable';
     }
   }
-  const currentURL = () => normalizeURL(location.href);
-  const readRules = () => GM_getValue(STORAGE, /** @type {Record<string, Rule>} */ ({}));
+
   /** @type {Runner | null} */
   let runner = null;
   /** @type {HTMLElement | null} */
   let editor = null;
-  let currentSignature = '';
-  let lastURL = currentURL();
-  /** @param {Record<string, Rule>} rules */
-  function signature(rules) {
-    return JSON.stringify(rules[currentURL()] || null);
-  }
-  /** @param {Record<string, Rule>} rules */
-  function writeRules(rules) {
-    // Record our own write before listeners run; don't tear down a fresh alarm.
-    const previous = currentSignature;
-    currentSignature = signature(rules);
-    try {
-      GM_setValue(STORAGE, rules);
-    } catch (error) {
-      currentSignature = previous;
-      throw error;
-    }
-  }
-  /** @param {Rule} rule */
-  function saveRule(rule) {
-    const rules = readRules();
-    rules[rule.url] = { ...rule };
-    writeRules(rules);
-  }
-  /** @param {Rule} rule */
-  function validateRule(rule) {
-    normalizeURL(rule.url);
-    if (!['auto', 'manager'].includes(rule.notificationBackend))
-      throw new Error('Choose a valid notification method.');
-    for (const key of /** @type {const} */ ([
-      'intervalSeconds',
-      'soundRepeatSeconds',
-      'notificationRepeatSeconds',
-    ])) {
-      if (!Number.isFinite(rule[key]) || rule[key] < 1 || rule[key] > 86400)
-        throw new Error(key + ' must be between 1 and 86400 seconds.');
-    }
-    for (const key of /** @type {const} */ (['settleSeconds', 'confirmSeconds'])) {
-      if (!Number.isFinite(rule[key]) || rule[key] < 0 || rule[key] > 86400)
-        throw new Error(key + ' must be between 0 and 86400 seconds.');
-    }
-    if (!['found', 'not-found'].includes(rule.stopWhen))
-      throw new Error('Choose found or not found.');
-    if (typeof rule.selector !== 'string' || !rule.selector.trim())
-      throw new Error('Enter a CSS selector.');
-    if (typeof rule.text !== 'string') throw new Error('Text must be a string.');
-    if (!Number.isFinite(rule.volume) || rule.volume < 0 || rule.volume > 1)
-      throw new Error('Volume must be between 0 and 1.');
-    document.querySelector(rule.selector);
-    if (rule.readySelector) document.querySelector(rule.readySelector);
-  }
+  /** @type {string | null} */
+  let lastUrl = null;
+  let followingNavigation = false;
+  /** @type {Set<string>} */
+  const listenedUrls = new Set();
+
   function boot() {
     if (runner) runner.destroy();
     runner = null;
-    const rules = readRules();
-    currentSignature = signature(rules);
-    const rule = rules[currentURL()];
-    if (!editor && rule) runner = runWatch({ ...DEFAULTS, ...rule });
+    const url = currentUrl();
+    lastUrl = url;
+    const watch = url === null ? null : readWatch(url);
+    if (url === null || !watch) return;
+    followWatchedPage(url);
+    if (!editor) runner = runWatch(watch);
+  }
+
+  /**
+   * Starts the listeners a watched page needs. Unwatched pages never get here.
+   * @param {string} url
+   */
+  function followWatchedPage(url) {
+    if (!listenedUrls.has(url)) {
+      listenedUrls.add(url);
+      GM_addValueChangeListener(WATCH_PREFIX + url, (_name, _oldValue, _newValue, remote) => {
+        if (remote && currentUrl() === url) applyRemoteChange(url);
+      });
+    }
+    if (followingNavigation) return;
+    followingNavigation = true;
+    window.addEventListener('popstate', followNavigation);
+    setInterval(followNavigation, 500);
+  }
+
+  /** @param {string} url */
+  function applyRemoteChange(url) {
+    if (!editor) {
+      boot();
+      return;
+    }
+    if (runner) runner.destroy();
+    runner = null;
+    const watch = readWatch(url);
+    if (watch?.pendingAlert) runner = runWatch({ ...watch, enabled: false });
+  }
+
+  function followNavigation() {
+    const url = currentUrl();
+    if (url === lastUrl) return;
+    lastUrl = url;
+    if (!editor) boot();
   }
 
   function openManager() {
@@ -191,11 +319,11 @@
     editor = host;
     host.style.cssText =
       'position:fixed;inset:0;z-index:2147483647;background:#0009;display:grid;place-items:center;padding:12px;';
-    const root = host.attachShadow({ mode: 'open' });
+    const root = host.attachShadow({ mode: SHADOW_MODE });
     const style = document.createElement('style');
     style.textContent = `
       *{box-sizing:border-box} .panel{width:min(650px,94vw);max-height:90vh;overflow:auto;background:#17202a;color:#fff;border:1px solid #777;border-radius:12px;padding:20px;font:14px/1.5 system-ui,sans-serif;box-shadow:0 12px 50px #0009}
-      h2{margin:0 0 8px;font-size:22px}p{margin:6px 0 14px;color:#d1d5db}label{display:block;margin:12px 0 0}input:not([type=checkbox]),select,textarea{display:block;width:100%;margin-top:4px;padding:8px;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;font:inherit}input[type=checkbox]{margin-right:8px}small{display:block;color:#bfc8d2}button{font:inherit;padding:7px 12px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#111;cursor:pointer}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.error{color:#ffb4b4;white-space:pre-wrap;margin-top:12px}details{margin-top:16px}summary{cursor:pointer;font-weight:600}
+      h2{margin:0 0 8px;font-size:22px}p{margin:6px 0 14px;color:#d1d5db}label{display:block}.field{margin:12px 0 0}.check{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.check small{flex-basis:100%}input:not([type=checkbox]),select,textarea{display:block;width:100%;margin-top:4px;padding:8px;color:#111;background:#fff;border:1px solid #aaa;border-radius:5px;font:inherit}input[type=checkbox]{margin:0}[aria-invalid=true]{border-color:#ff5252;outline:2px solid #ff5252}small{display:block;color:#bfc8d2}.field-error{flex-basis:100%;margin:4px 0 0;color:#ffb4b4}button{font:inherit;padding:7px 12px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#111;cursor:pointer}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.error{color:#ffb4b4;white-space:pre-wrap;margin-top:12px}details{margin-top:16px}summary{cursor:pointer;font-weight:600}
     `;
     const panel = document.createElement('section');
     panel.className = 'panel';
@@ -219,16 +347,21 @@
       'p',
       'Save one watch per URL. Refreshing is suspended in this tab while this panel is open.',
     );
-    const pickLabel = add('label', 'Saved watches');
-    const picker = add('select', undefined, pickLabel);
+    const pickWrapper = add('div');
+    pickWrapper.className = 'field';
+    const pickLabel = add('label', 'Saved watches', pickWrapper);
+    pickLabel.htmlFor = 'reload-until-saved-watch';
+    const picker = add('select', undefined, pickWrapper);
+    picker.id = 'reload-until-saved-watch';
     picker.name = 'savedWatch';
     const fresh = add('option', '＋ New watch for this page', picker);
     fresh.value = '';
-    for (const rule of Object.values(readRules())) {
-      const option = add('option', (rule.enabled ? 'ON — ' : 'OFF — ') + rule.url, picker);
-      option.value = rule.url;
+    for (const watch of listWatches()) {
+      const option = add('option', (watch.enabled ? 'ON — ' : 'OFF — ') + watch.url, picker);
+      option.value = watch.url;
     }
     const form = add('form');
+    form.noValidate = true;
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       saveFromForm();
@@ -244,13 +377,20 @@
      * @param {string[][] | null} [choices]
      */
     function field(name, label, type = 'text', help = '', parent = form, choices = null) {
-      const wrapper = add('label', type === 'checkbox' ? undefined : label, parent);
+      const wrapper = add('div', undefined, parent);
+      wrapper.className = type === 'checkbox' ? 'field check' : 'field';
+      const id = 'reload-until-' + name;
+      const caption = document.createElement('label');
+      caption.htmlFor = id;
+      caption.textContent = label;
       const input = /** @type {HTMLInputElement} */ (
-        add(choices ? 'select' : type === 'textarea' ? 'textarea' : 'input', undefined, wrapper)
+        document.createElement(choices ? 'select' : type === 'textarea' ? 'textarea' : 'input')
       );
+      input.id = id;
       input.name = name;
       if (!choices && type !== 'textarea') input.type = type;
-      if (type === 'checkbox') add('span', label, wrapper);
+      if (type === 'checkbox') wrapper.append(input, caption);
+      else wrapper.append(caption, input);
       if (choices)
         for (const [value, text] of choices) {
           const opt = add('option', text, input);
@@ -258,11 +398,15 @@
         }
       if (type === 'number') {
         input.min = '0';
-        input.max = '86400';
+        input.max = String(MAX_SECONDS);
         input.step = 'any';
         input.required = true;
       }
-      if (help) add('small', help, wrapper);
+      if (help) {
+        const hint = add('small', help, wrapper);
+        hint.id = id + '-help';
+        input.setAttribute('aria-describedby', hint.id);
+      }
       fields[name] = input;
       return input;
     }
@@ -273,10 +417,11 @@
       'Exact URL, including query parameters. The #fragment is ignored.',
     ).required = true;
     field('enabled', 'Enabled — refresh this URL when it is open', 'checkbox');
-    field('intervalSeconds', 'Refresh interval (seconds)', 'number').min = '1';
-    field('stopWhen', 'Stop and notify when the target is…', 'text', '', form, [
-      ['not-found', 'Not found — disappears'],
-      ['found', 'Found — appears'],
+    field('intervalSeconds', 'Refresh interval (seconds)', 'number').min =
+      String(MIN_INTERVAL_SECONDS);
+    field('condition', 'Stop and notify when the target is…', 'text', '', form, [
+      ['appears', 'Appears'],
+      ['disappears', 'Disappears'],
     ]);
     field(
       'selector',
@@ -292,14 +437,14 @@
     );
     const advanced = add('details', undefined, form);
     add('summary', 'Timing, safeguards and notification settings', advanced);
-    field('caseSensitive', 'Case-sensitive text matching', 'checkbox', '', advanced);
+    field('matchCase', 'Match case', 'checkbox', '', advanced);
     field('settleSeconds', 'Initial rendering wait (seconds)', 'number', '', advanced);
     field('confirmSeconds', 'Condition confirmation time (seconds)', 'number', '', advanced);
     field(
       'readySelector',
       'Page-ready CSS selector (optional)',
       'text',
-      'If missing, the watch pauses. Without this guard, an error/login page can trigger a “not found” condition.',
+      'If missing, the watch pauses. Without this guard, an error or login page can make the target disappear.',
       advanced,
     );
     field('notificationTitle', 'Notification title', 'text', '', advanced);
@@ -397,13 +542,11 @@
     const remove = action('Delete watch', () => {
       if (!editingURL) return;
       try {
-        const rules = readRules();
-        if (rules[editingURL]?.pendingAlert)
+        if (readWatch(editingURL)?.pendingAlert)
           throw new Error(
             'Close settings and Acknowledge the active alert before deleting this watch.',
           );
-        delete rules[editingURL];
-        writeRules(rules);
+        deleteWatch(editingURL);
         close();
       } catch (e) {
         error.textContent = /** @type {Error} */ (e).message;
@@ -411,28 +554,53 @@
     });
     action('Close', close);
     let editingURL = '';
+
+    function clearFieldErrors() {
+      for (const input of Object.values(fields)) {
+        input.removeAttribute('aria-invalid');
+        input.removeAttribute('aria-errormessage');
+      }
+      for (const message of root.querySelectorAll('.field-error')) message.remove();
+    }
+    /** @param {FieldError} problem */
+    function showFieldError(problem) {
+      const input = fields[problem.field];
+      const message = document.createElement('p');
+      message.className = 'field-error';
+      message.id = input.id + '-error';
+      message.textContent = problem.message;
+      /** @type {HTMLElement} */ (input.parentElement).append(message);
+      input.setAttribute('aria-invalid', 'true');
+      input.setAttribute('aria-errormessage', message.id);
+      const section = input.closest('details');
+      if (section) section.open = true;
+      input.focus();
+    }
+
     /** @param {string} url */
     function fill(url) {
       editingURL = url;
-      const saved = /** @type {Rule | undefined} */ (readRules()[url]);
-      const rule = /** @type {Record<string, unknown>} */ ({
+      clearFieldErrors();
+      const saved = url ? readWatch(url) : null;
+      const watch = /** @type {Record<string, unknown>} */ ({
         ...DEFAULTS,
-        url: currentURL(),
+        url: currentUrl() ?? '',
         ...saved,
       });
       const defaults = /** @type {Record<string, unknown>} */ (DEFAULTS);
       for (const [name, input] of Object.entries(fields)) {
-        if (input.type === 'checkbox') input.checked = Boolean(rule[name]);
-        else input.value = String(rule[name] ?? defaults[name] ?? '');
+        if (input.type === 'checkbox') input.checked = Boolean(watch[name]);
+        else input.value = String(watch[name] ?? defaults[name] ?? '');
       }
       showPermission();
       remove.disabled = !url;
       error.textContent = '';
     }
     function saveFromForm() {
-      if (!form.reportValidity()) return;
+      clearFieldErrors();
+      error.textContent = '';
       try {
-        if (readRules()[editingURL]?.pendingAlert)
+        if (editingURL && readWatch(editingURL)?.pendingAlert)
           throw new Error(
             'Close settings and Acknowledge the active alert before editing this watch.',
           );
@@ -442,26 +610,28 @@
             input.type === 'checkbox'
               ? input.checked
               : input.type === 'number'
-                ? Number(input.value)
+                ? input.value.trim() === ''
+                  ? Number.NaN
+                  : Number(input.value)
                 : input.value;
         }
-        const rule = /** @type {Rule} */ (draft);
-        rule.url = normalizeURL(rule.url.trim());
-        rule.selector = rule.selector.trim();
-        rule.readySelector = rule.readySelector.trim();
-        rule.lastStatus = rule.enabled ? 'running' : 'paused';
-        validateRule(rule);
-        const rules = readRules();
-        if (rule.url !== editingURL && rules[rule.url])
-          throw new Error(
+        const watch = /** @type {Watch} */ (draft);
+        watch.url = normalizeUrl(watch.url.trim()) ?? watch.url;
+        watch.selector = watch.selector.trim();
+        watch.readySelector = watch.readySelector.trim();
+        watch.pendingAlert = null;
+        validateWatch(watch);
+        if (watch.url !== editingURL && readWatch(watch.url))
+          throw new FieldError(
+            'url',
             'A watch already exists for this URL. Select it from Saved watches to edit it.',
           );
-        if (editingURL && editingURL !== rule.url) delete rules[editingURL];
-        rules[rule.url] = rule;
-        writeRules(rules);
+        writeWatch(watch);
+        if (editingURL && editingURL !== watch.url) deleteWatch(editingURL);
         close();
       } catch (e) {
-        error.textContent = 'Could not save: ' + /** @type {Error} */ (e).message;
+        if (e instanceof FieldError) showFieldError(e);
+        else error.textContent = 'Could not save: ' + /** @type {Error} */ (e).message;
       }
     }
     function close() {
@@ -470,7 +640,8 @@
       boot();
     }
     picker.addEventListener('change', () => fill(picker.value));
-    const initial = readRules()[currentURL()] ? currentURL() : '';
+    const here = currentUrl();
+    const initial = here !== null && readWatch(here) ? here : '';
     picker.value = initial;
     fill(initial);
     root.append(style, panel);
@@ -478,34 +649,13 @@
     fields.url.focus();
   }
 
-  function followNavigation() {
-    if (currentURL() === lastURL) return;
-    lastURL = currentURL();
-    if (!editor) boot();
-  }
   function initialize() {
     GM_registerMenuCommand('Reload Until: Manage watches', openManager);
-    GM_addValueChangeListener(STORAGE, () => {
-      const next = signature(readRules());
-      if (next !== currentSignature) {
-        currentSignature = next;
-        if (!editor) boot();
-        else {
-          if (runner) runner.destroy();
-          runner = null;
-          const rule = readRules()[currentURL()];
-          if (rule?.pendingAlert) runner = runWatch({ ...DEFAULTS, ...rule, enabled: false });
-        }
-      }
-    });
-    lastURL = currentURL();
-    window.addEventListener('popstate', followNavigation);
-    setInterval(followNavigation, 500);
     boot();
   }
 
   /**
-   * @param {Rule} CONFIG
+   * @param {Watch} CONFIG
    * @returns {Runner}
    */
   function runWatch(CONFIG) {
@@ -514,6 +664,7 @@
     /** @type {ReturnType<typeof setInterval> | undefined} */
     let timer = undefined;
     let startedAt = 0;
+    /** @type {number | null} */
     let candidateSince = null;
     /** @type {ReturnType<typeof setInterval> | undefined} */
     let alarmTimer = undefined;
@@ -532,18 +683,22 @@
     host.id = 'reload-until';
     host.style.cssText =
       'position:fixed;right:12px;bottom:12px;z-index:2147483647;max-width:360px;';
-    const root = host.attachShadow({ mode: 'open' });
+    const root = host.attachShadow({ mode: SHADOW_MODE });
     const box = document.createElement('section');
     box.style.cssText =
       'background:#17202a;color:#fff;border:2px solid #7f8c8d;border-radius:10px;padding:14px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 3px 18px #0006;';
     const status = document.createElement('div');
     status.setAttribute('role', 'status');
-    const deliveryStatus = document.createElement('div');
-    deliveryStatus.style.cssText = 'font-size:12px;color:#d1d5db;margin-top:6px;';
-    deliveryStatus.setAttribute('role', 'status');
     const notice = document.createElement('div');
     notice.setAttribute('role', 'alert');
     notice.style.cssText = 'margin-top:6px;white-space:pre-wrap;';
+    const detailStyle = 'font-size:12px;color:#d1d5db;margin-top:6px;';
+    const soundStatus = document.createElement('div');
+    soundStatus.style.cssText = detailStyle;
+    soundStatus.setAttribute('aria-live', 'polite');
+    const deliveryStatus = document.createElement('div');
+    deliveryStatus.style.cssText = detailStyle;
+    deliveryStatus.setAttribute('aria-live', 'polite');
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;';
     /**
@@ -560,23 +715,24 @@
       actions.append(element);
       return element;
     }
-    const toggle = button('Enable', () => (running ? pause('Paused') : start()));
-    if (currentURL() !== CONFIG.url) button('Open watched page', () => location.assign(CONFIG.url));
+    const toggle = button('Enable', () => (running ? pause('Paused') : start(true)));
+    if (currentUrl() !== CONFIG.url) button('Open watched page', () => location.assign(CONFIG.url));
     button('Settings', openManager);
     button('Test alert', () => alertUser(!CONFIG.pendingAlert));
     const acknowledgeButton = button('Acknowledge', acknowledgeAlert);
     acknowledgeButton.hidden = true;
-    box.append(status, notice, deliveryStatus, actions);
+    box.append(status, notice, soundStatus, deliveryStatus, actions);
     root.append(box);
     document.documentElement.append(host);
 
-    /** @param {string} state */
-    function save(state) {
+    /**
+     * @param {Partial<Watch>} patch
+     * @returns {boolean} Whether the change reached storage.
+     */
+    function persist(patch) {
+      Object.assign(CONFIG, patch);
       try {
-        CONFIG.enabled = state === 'running';
-        CONFIG.lastStatus = state;
-        saveRule(CONFIG);
-        return true;
+        return updateWatch(CONFIG.url, patch);
       } catch {
         status.textContent =
           'Paused: browser storage is unavailable; cannot safely retain stop state.';
@@ -603,23 +759,13 @@
       stopTimers();
       silence();
       status.textContent = message;
-      save('paused');
-    }
-
-    function validate() {
-      validateRule(CONFIG);
-    }
-
-    /** @param {string} text */
-    function normalizeText(text) {
-      const result = text.replace(/\s+/g, ' ').trim();
-      return CONFIG.caseSensitive ? result : result.toLowerCase();
+      persist({ enabled: false });
     }
 
     function tick() {
       if (!running) return;
       try {
-        if (normalizeURL(location.href) !== normalizeURL(CONFIG.url)) {
+        if (currentUrl() !== CONFIG.url) {
           followNavigation();
           return;
         }
@@ -634,11 +780,7 @@
           pause('Paused: page is not ready. Check login/loading, then Enable.');
           return;
         }
-        const needle = normalizeText(CONFIG.text);
-        const found = Array.from(document.querySelectorAll(CONFIG.selector)).some(
-          (element) => !needle || normalizeText(element.textContent || '').includes(needle),
-        );
-        const satisfied = CONFIG.stopWhen === 'found' ? found : !found;
+        const { found, satisfied } = evaluateCondition(CONFIG);
         if (satisfied) {
           candidateSince ??= now;
           const remaining = CONFIG.confirmSeconds * 1000 - (now - candidateSince);
@@ -648,13 +790,12 @@
           if (remaining <= 0) {
             stopTimers(); // Stop first, even if notifications fail.
             status.textContent = 'Stopped: condition met. Enable to watch again.';
-            if (CONFIG.requireExplicitDismissal)
-              CONFIG.pendingAlert = {
-                title: CONFIG.notificationTitle,
-                text: CONFIG.notificationText,
-                createdAt: Date.now(),
-              };
-            const persisted = save('stopped');
+            const persisted = persist({
+              enabled: false,
+              pendingAlert: CONFIG.requireExplicitDismissal
+                ? { kind: 'condition', at: Date.now(), landedUrl: CONFIG.url }
+                : null,
+            });
             alertUser(false);
             if (!persisted)
               notice.textContent += '\nStop state could not be saved; avoid manually reloading.';
@@ -673,7 +814,6 @@
         if (remaining <= 0) {
           stopTimers();
           watchedTitle('reloading');
-          // State remains running so monitoring continues on the next page load.
           location.reload();
         }
       } catch (error) {
@@ -681,8 +821,9 @@
       }
     }
 
-    function start() {
-      if (currentURL() !== CONFIG.url) {
+    /** @param {boolean} byUser Whether the user turned the watch on, as opposed to a page load. */
+    function start(byUser) {
+      if (currentUrl() !== CONFIG.url) {
         status.textContent = 'Stopped: return to the watched URL before enabling this watch.';
         return;
       }
@@ -693,12 +834,12 @@
       stopTimers();
       silence();
       try {
-        validate();
+        validateWatch(CONFIG);
       } catch (error) {
         pause('Paused: invalid configuration — ' + /** @type {Error} */ (error).message);
         return;
       }
-      if (!save('running')) return;
+      if (byUser && !persist({ enabled: true })) return;
       running = true;
       toggle.textContent = 'Disable';
       startedAt = performance.now();
@@ -717,12 +858,10 @@
         audio ??= new AudioContext();
         if (audio.state !== 'running') {
           audio.resume().catch(() => {});
-          notice.textContent =
-            '⚠ ' +
-            (alarmMessage || '') +
-            '\nSound may be blocked: allow audio autoplay for this site.';
+          soundStatus.textContent = 'Sound may be blocked: allow audio autoplay for this site.';
           return;
         }
+        soundStatus.textContent = '';
         const oscillator = audio.createOscillator();
         const gain = audio.createGain();
         oscillator.connect(gain);
@@ -741,8 +880,7 @@
         oscillator.start(now);
         oscillator.stop(now + 0.5);
       } catch (error) {
-        notice.textContent =
-          '⚠ ' + alarmMessage + '\nSound unavailable: ' + /** @type {Error} */ (error).message;
+        soundStatus.textContent = 'Sound unavailable: ' + /** @type {Error} */ (error).message;
       }
     }
 
@@ -752,12 +890,8 @@
       silence();
       alarmActive = true;
       const persistent = Boolean(CONFIG.pendingAlert) || CONFIG.requireExplicitDismissal;
-      const title = test
-        ? 'Reload Until — TEST'
-        : CONFIG.pendingAlert?.title || CONFIG.notificationTitle;
-      alarmMessage = test
-        ? 'Test alert — monitoring state is unchanged.'
-        : CONFIG.pendingAlert?.text || CONFIG.notificationText;
+      const title = test ? 'Reload Until — TEST' : CONFIG.notificationTitle;
+      alarmMessage = test ? 'Test alert — monitoring state is unchanged.' : CONFIG.notificationText;
       notice.textContent =
         '⚠ ' + alarmMessage + (persistent ? '\nClick Acknowledge to dismiss this alert.' : '');
       acknowledgeButton.hidden = false;
@@ -769,7 +903,7 @@
         if (!alarmActive || !CONFIG.desktopNotification) return;
         const generation = ++notificationGeneration;
         const text = alarmMessage + (persistent ? ' — Open the page and click Acknowledge.' : '');
-        const tag = 'reload-until-' + normalizeURL(CONFIG.url);
+        const tag = 'reload-until-' + CONFIG.url;
         const click = () => {
           if (!alarmActive || generation !== notificationGeneration) return;
           window.focus();
@@ -861,14 +995,14 @@
     function acknowledgeAlert() {
       if (CONFIG.pendingAlert) {
         try {
-          const latest = readRules()[CONFIG.url];
-          if (latest) saveRule({ ...latest, pendingAlert: null });
+          updateWatch(CONFIG.url, { pendingAlert: null });
           CONFIG.pendingAlert = null;
         } catch (error) {
           notice.textContent +=
             '\nCould not save acknowledgement; try again: ' + /** @type {Error} */ (error).message;
           return;
         }
+        status.textContent = 'Stopped: condition met. Enable to watch again.';
       }
       silence();
     }
@@ -890,6 +1024,7 @@
       notificationGeneration++;
       closeNativeNotification();
       deliveryStatus.textContent = '';
+      soundStatus.textContent = '';
       clearInterval(alarmTimer);
       alarmTimer = undefined;
       clearInterval(notificationTimer);
@@ -902,14 +1037,10 @@
     }
 
     if (CONFIG.pendingAlert) {
-      status.textContent = 'Stopped: an alert is waiting for explicit acknowledgement.';
+      status.textContent = 'Stopped: condition met. An alert is waiting for you to acknowledge it.';
       alertUser(false);
-    } else if (CONFIG.enabled) start();
-    else
-      status.textContent =
-        CONFIG.lastStatus === 'stopped'
-          ? 'Stopped: condition previously met. Enable to watch again.'
-          : 'Disabled. Enable to start watching.';
+    } else if (CONFIG.enabled) start(false);
+    else status.textContent = 'Disabled. Enable to start watching.';
     return {
       suspendRefresh() {
         stopTimers();
