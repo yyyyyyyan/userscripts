@@ -86,8 +86,9 @@ network requests.
 - Some sites, such as react.dev, check your theme the moment they start
   loading, before the script runs, and keep your browser's setting. **Status**
   says so. To make the script run first, turn on **Synchronous page mode** in
-  Violentmonkey's advanced settings, or set Tampermonkey's injection mode to
-  **Instant**. Then reload the page.
+  Violentmonkey's advanced settings. In Tampermonkey, open **Settings**, set
+  **Config mode** to **Advanced**, and set **Content Script API** to
+  **UserScripts API Dynamic**. Then reload the page.
 - A site that saves your theme with your account, or in its own button, decides
   for itself. The script does not override it.
 - It can't reach parts of some pages built as sealed components before it

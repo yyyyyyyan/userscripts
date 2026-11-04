@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Per-Site Light/Dark Mode
 // @namespace     yyyyyyyan/per-site-light-dark-mode
-// @version       1.0.1
+// @version       1.0.2
 // @description   Makes each site use its own light or dark theme, remembered per site, without generating colors.
 // @author        yyyyyyyan
 // @license       GPL-3.0-or-later
@@ -158,7 +158,7 @@
   }
 
   const EARLY_INJECTION =
-    "To make the script run first, turn on Synchronous page mode in Violentmonkey's advanced settings, or set Tampermonkey's injection mode to Instant, then reload the page.";
+    "To make the script run first, turn on Synchronous page mode in Violentmonkey's advanced settings, or set Tampermonkey's Content Script API setting to UserScripts API Dynamic, then reload the page.";
 
   /** @returns {string[]} Plain sentences, the most useful first. */
   function describeStatus() {
