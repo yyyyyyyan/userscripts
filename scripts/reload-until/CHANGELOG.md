@@ -2,6 +2,16 @@
 
 All notable changes to Reload Until are documented here. The format is based on Keep a Changelog, and versions follow Semantic Versioning.
 
+## [1.0.1] - 2026-11-04
+
+### Fixed
+
+- On sites with keyboard shortcuts, such as GitHub, typing in the settings panel no longer sets off the site's shortcuts instead of filling in the field.
+
+### Security
+
+- A page where a reload ends, or any page you open the settings on, can no longer read your watches by hooking the page's own JavaScript, because the script now runs apart from it.
+
 ## [1.0.0] - 2026-11-03
 
 ### Added
