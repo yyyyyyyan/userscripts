@@ -158,7 +158,7 @@
   }
 
   const EARLY_INJECTION =
-    "To make the script run first, turn on Synchronous page mode in Violentmonkey's advanced settings, or set Tampermonkey's injection mode to Instant, then reload the page.";
+    "To make the script run first, turn on Synchronous page mode in Violentmonkey's advanced settings, or set Tampermonkey's Content Script API setting to UserScripts API Dynamic, then reload the page.";
 
   /** @returns {string[]} Plain sentences, the most useful first. */
   function describeStatus() {
