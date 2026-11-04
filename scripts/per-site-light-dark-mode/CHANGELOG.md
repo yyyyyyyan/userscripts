@@ -2,6 +2,12 @@
 
 All notable changes to Per-Site Light/Dark Mode are documented here. The format is based on Keep a Changelog, and versions follow Semantic Versioning.
 
+## [1.0.2] - 2026-11-04
+
+### Fixed
+
+- Status and the README now name the Tampermonkey setting that makes the script run first, Content Script API set to UserScripts API Dynamic, instead of an Instant injection mode that current Tampermonkey doesn't have.
+
 ## [1.0.1] - 2026-11-03
 
 ### Fixed
