@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Reload Until
 // @namespace     yyyyyyyan/reload-until
-// @version       1.0.0
+// @version       1.0.1
 // @description   Reloads a page until something appears or disappears, then raises an alarm you can't miss.
 // @author        yyyyyyyan
 // @license       GPL-3.0-or-later
