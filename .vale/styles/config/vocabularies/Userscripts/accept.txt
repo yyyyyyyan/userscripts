@@ -12,3 +12,5 @@ prek
 PRs?
 [Ww]orktrees?
 READMEs?
+UserScripts API( Dynamic)?
+Config mode

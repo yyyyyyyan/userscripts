@@ -100,8 +100,9 @@ the ones its README names. The release waits until each item is checked:
   - [ ] docs.python.org
   - [ ] wiki.archlinux.org
   - [ ] react.dev stays light and **Status** suggests the manager setting;
-    after turning on **Synchronous page mode** (Violentmonkey) or **Instant**
-    injection (Tampermonkey) and reloading, it turns dark
+    after turning on **Synchronous page mode** (Violentmonkey) or setting
+    **Content Script API** to **UserScripts API Dynamic** (Tampermonkey) and
+    reloading, it turns dark
 - [ ] In Tampermonkey, on at least one of those sites, the theme applies and
   **Status** reports it.
 - [ ] Form controls and scroll bars follow the choice, in Chromium and in

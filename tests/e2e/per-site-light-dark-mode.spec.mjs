@@ -873,7 +873,7 @@ test('status explains an early theme check in plain sentences', async () => {
     expect(status).toContain('Dark is saved for 127.0.0.1.');
     expect(status).toContain(EARLY_WARNING);
     expect(status).toContain('Synchronous page mode');
-    expect(status).toContain('injection mode to Instant');
+    expect(status).toContain('Content Script API setting to UserScripts API Dynamic');
     expect(sentences(status).length).toBeGreaterThanOrEqual(2);
     expect(sentences(status).length).toBeLessThanOrEqual(4);
   });
