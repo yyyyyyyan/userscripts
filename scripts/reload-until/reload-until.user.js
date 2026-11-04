@@ -1067,6 +1067,18 @@
   }
 
   /**
+   * Stops key presses inside one of the script's shadow roots from reaching the page. Outside the
+   * root they seem to come from its host element rather than a text field, so a site's keyboard
+   * shortcuts, such as GitHub's, would act on letters typed in the panel.
+   * @param {ShadowRoot} root
+   */
+  function keepKeysFromPage(root) {
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      root.addEventListener(type, (event) => event.stopPropagation());
+    }
+  }
+
+  /**
    * Styles a shadow root with a constructed stylesheet, which a page's Content Security Policy
    * doesn't block the way it blocks `<style>` elements. Browsers without constructed
    * stylesheets get a `<style>` element instead.
@@ -1182,6 +1194,7 @@
     host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;';
     const root = host.attachShadow({ mode: SHADOW_MODE });
     adoptStyles(root, PANEL_CSS);
+    keepKeysFromPage(root);
     const backdrop = document.createElement('div');
     backdrop.className = 'backdrop';
     const panel = document.createElement('section');
@@ -1675,6 +1688,7 @@
     host.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:2147483647;max-width:360px;';
     const root = host.attachShadow({ mode: SHADOW_MODE });
     adoptStyles(root, WIDGET_CSS);
+    keepKeysFromPage(root);
     const box = document.createElement('section');
     box.className = 'box';
     box.setAttribute('aria-label', 'Reload Until tip');
@@ -1747,6 +1761,7 @@
       'position:fixed;right:12px;bottom:12px;z-index:2147483647;max-width:360px;';
     const root = host.attachShadow({ mode: SHADOW_MODE });
     adoptStyles(root, WIDGET_CSS);
+    keepKeysFromPage(root);
     const box = document.createElement('section');
     box.className = 'box';
     box.setAttribute('aria-labelledby', 'reload-until-name');
