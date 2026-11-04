@@ -791,6 +791,29 @@ test("a page that wraps attachShadow first never gets the panel's shadow root", 
   });
 });
 
+test("keys typed in the panel never reach the page's keyboard shortcuts", async () => {
+  await withScript(async ({ vm, site }) => {
+    const page = await vm.context.newPage();
+    await page.addInitScript(() => {
+      /** @type {string[]} */
+      const shortcuts = [];
+      Object.assign(window, { pageShortcuts: shortcuts });
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        document.addEventListener(type, (event) => {
+          if (!(event.target instanceof HTMLInputElement)) shortcuts.push(`${type}:${event.key}`);
+        });
+      }
+    });
+    await page.goto(`${site.origin}/appear`);
+    const panel = await openPanel(vm, page);
+    const selector = field(panel, LABELS.selector);
+    await selector.click();
+    await page.keyboard.type('body');
+    await expect(selector).toHaveValue('body');
+    expect(await page.evaluate(() => window.pageShortcuts)).toEqual([]);
+  });
+});
+
 test('in the page world, page JavaScript cannot press the panel buttons', async () => {
   await withScript(async ({ vm, site }) => {
     const page = await vm.context.newPage();
