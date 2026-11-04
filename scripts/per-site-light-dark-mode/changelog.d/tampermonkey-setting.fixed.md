@@ -1,1 +1,0 @@
-Status and the README now name the Tampermonkey setting that makes the script run first, Content Script API set to UserScripts API Dynamic, instead of an Instant injection mode that current Tampermonkey doesn't have.

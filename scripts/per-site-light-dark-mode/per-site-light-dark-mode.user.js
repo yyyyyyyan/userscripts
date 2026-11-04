@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Per-Site Light/Dark Mode
 // @namespace     yyyyyyyan/per-site-light-dark-mode
-// @version       1.0.1
+// @version       1.0.2
 // @description   Makes each site use its own light or dark theme, remembered per site, without generating colors.
 // @author        yyyyyyyan
 // @license       GPL-3.0-or-later
