@@ -29,19 +29,19 @@ repos:
         files: ^scripts/.*\.user\.js$
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.51.1
+    rev: v1.52.0
     hooks:
       - id: typos
         exclude: ^COPYING$
 
   - repo: https://github.com/rvben/rumdl-pre-commit
-    rev: v0.3.0
+    rev: v0.3.2
     hooks:
       - id: rumdl
         exclude: ^COPYING$
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.31.1
+    rev: v1.32.0
     hooks:
       - id: zizmor
 
